@@ -41,6 +41,8 @@ class GenerationOptions(BaseModel):
     style_overrides: StyleOverrides | None = None
     enable_visual_critic: bool = False
     mode: str = "fancy"  # "quick" or "fancy"
+    speech_minutes: int | None = None  # Target speech duration in minutes (controls notes length)
+    theme_color: str | None = None     # Primary theme color hex (e.g. "#1A365D")
 
 
 class GenerateRequest(BaseModel):
@@ -125,6 +127,7 @@ class PreviewSlide(BaseModel):
     content: str
     notes: str | None = None
     original: str | None = None
+    notes_sources: list[dict] | None = None  # [{"text": "...", "source": "..."}]
 
 
 class PreviewResponse(BaseModel):
@@ -139,6 +142,20 @@ class ReexportResponse(BaseModel):
     job_id: str
     status: str
     output_path: str
+
+
+class RegenerateNotesRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    model_settings: ModelConfig = Field(alias="model_config")
+    language: str = "zh"
+    speech_minutes: int | None = None
+
+
+class RegenerateNotesResponse(BaseModel):
+    job_id: str
+    notes: dict[str, str]
+    notes_sources: dict[str, list[dict]] = {}
 
 
 class ProviderModel(BaseModel):

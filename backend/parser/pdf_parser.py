@@ -34,6 +34,25 @@ import fitz  # PyMuPDF
 from .base import PaperParser
 from .paper_model import PaperEquation, PaperFigure, PaperSection, PaperTable, ParsedPaper
 
+# ── Optional: PaddleOCR for high-precision equation detection ──────────────
+PADDLEOCR_AVAILABLE = False
+_PPStructure: type | None = None
+_ocr_engine: object | None = None
+
+try:
+    from paddleocr import PPStructureV3  # type: ignore[import-untyped]
+
+    _PPStructure = PPStructureV3
+    PADDLEOCR_AVAILABLE = True
+except (ImportError, TypeError):
+    try:
+        from paddleocr import PPStructure  # type: ignore[import-untyped]
+
+        _PPStructure = PPStructure
+        PADDLEOCR_AVAILABLE = True
+    except ImportError:
+        pass
+
 # ── tunables ────────────────────────────────────────────────────────────────
 MIN_IMG_PX = 80
 RENDER_DPI = 150
@@ -686,10 +705,17 @@ class PDFParser(PaperParser):
     def _extract_page_equations(self, page: fitz.Page, page_idx: int) -> list[PaperEquation]:
         """Extract display equations from a PDF page.
 
-        Strategy: scan text blocks for lines that look like numbered or standalone
-        equations (centered math, equation numbers like (1), (2), etc.). Convert
-        common math symbols to LaTeX approximation.
+        Uses PaddleOCR layout analysis when available for higher accuracy,
+        otherwise falls back to text-block heuristics.
         """
+        if PADDLEOCR_AVAILABLE:
+            return self._extract_page_equations_ocr(page, page_idx)
+        return self._extract_page_equations_heuristic(page, page_idx)
+
+    def _extract_page_equations_heuristic(
+        self, page: fitz.Page, page_idx: int
+    ) -> list[PaperEquation]:
+        """Extract display equations using text-block heuristics (no OCR)."""
         equations: list[PaperEquation] = []
         blocks = page.get_text("dict")["blocks"]
 
@@ -752,6 +778,96 @@ class PDFParser(PaperParser):
 
         return equations
 
+    def _extract_page_equations_ocr(
+        self, page: fitz.Page, page_idx: int
+    ) -> list[PaperEquation]:
+        """Extract equations using PaddleOCR layout analysis.
+
+        Falls back to the heuristic method if PaddleOCR is not installed
+        or fails.  When available, PPStructure performs vision-based
+        layout analysis that can detect equations embedded as images —
+        something the text-only heuristic cannot do.
+        """
+        global _ocr_engine
+
+        if not PADDLEOCR_AVAILABLE or _PPStructure is None:
+            return self._extract_page_equations_heuristic(page, page_idx)
+
+        try:
+            # Render page to image for OCR
+            pix = page.get_pixmap(dpi=200)
+            img_bytes = pix.tobytes("png")
+
+            import tempfile
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                tmp.write(img_bytes)
+                tmp_path = tmp.name
+
+            try:
+                # Lazy-init the OCR engine
+                if _ocr_engine is None:
+                    _ocr_engine = _PPStructure(show_log=False)
+
+                result = _ocr_engine(tmp_path)
+            finally:
+                import os
+                os.unlink(tmp_path)
+
+            equations: list[PaperEquation] = []
+            page_text = page.get_text()
+
+            for item in result:
+                bbox = item.get("bbox", [])
+                category = item.get("type", "")
+
+                if category not in ("equation", "formula", "isolated", "displayed_equation"):
+                    continue
+
+                if len(bbox) != 4:
+                    continue
+
+                x0, y0, x1, y1 = bbox
+                if x1 - x0 < 20 or y1 - y0 < 10:
+                    continue
+
+                # Try to find corresponding text in the page for LaTeX
+                # approximation; use OCR region position as hint
+                latex = ""
+                context = ""
+                try:
+                    # Convert OCR bbox to PDF text coordinates
+                    rect = fitz.Rect(x0 / 200 * 72, y0 / 200 * 72, x1 / 200 * 72, y1 / 200 * 72)
+                    eq_text = page.get_text("text", clip=rect).strip()
+                    if eq_text:
+                        latex = self._text_to_latex(eq_text)
+                        # Get surrounding context
+                        idx = page_text.find(eq_text[:30]) if len(eq_text) > 30 else page_text.find(eq_text)
+                        if idx >= 0:
+                            start = max(0, idx - 80)
+                            end = min(len(page_text), idx + len(eq_text) + 80)
+                            context = page_text[start:end].replace("\n", " ").strip()
+                except Exception:
+                    pass
+
+                if not latex:
+                    latex = f"(equation region p{page_idx + 1})"
+
+                equations.append(PaperEquation(
+                    latex=latex,
+                    page_number=page_idx + 1,
+                    context=context,
+                ))
+
+            # If OCR found nothing, fall back to heuristic
+            if not equations:
+                return self._extract_page_equations_heuristic(page, page_idx)
+
+            return equations
+
+        except Exception:
+            # OCR failed — fall back gracefully
+            return self._extract_page_equations_heuristic(page, page_idx)
+
     @staticmethod
     def _text_to_latex(text: str) -> str:
         """Best-effort conversion of PDF-extracted equation text to LaTeX.
@@ -784,703 +900,13 @@ class PDFParser(PaperParser):
         ]
         for old, new in replacements:
             result = result.replace(old, new)
-        # Wrap in $...$ for inline or $...$ for display
-        # Wrap in $...$ for inline or $$...$$ for display
+        # Wrap in $$...$$ for display (numbered) or $...$ for inline
         eq_num_re = re.compile(r'\(\s*\d+\s*\)\s*$')
         has_num = bool(eq_num_re.search(result))
         result = eq_num_re.sub("", result).strip()
         if has_num:
             return f"$${result}$$"
         return f"${result}$"
-
-    def _extract_page_tables(self, page: fitz.Page) -> list[PaperTable]:
-        tables: list[PaperTable] = []
-        if not hasattr(page, "find_tables"):
-            return tables
-        try:
-            for tab in tab_finder.tables:
-                rows = tab.extract()
-                if not rows:
-                    continue
-                md = self._rows_to_markdown(rows)
-                if md:
-                    tables.append(PaperTable(markdown=md))
-        except Exception:
-            pass
-        return tables
-
-    def _iter_page_tables(self, page: fitz.Page):
-        if not hasattr(page, "find_tables"):
-            return
-        try:
-            tab_finder = page.find_tables()
-            for tab in tab_finder.tables:
-                if getattr(tab, "bbox", None) is None:
-                    continue
-                yield tab
-        except Exception:
-            return
-
-    @staticmethod
-    def _rows_to_markdown(rows: list[list[str | None]]) -> str:
-        if not rows:
-            return ""
-        header = [str(c or "") for c in rows[0]]
-        sep = ["---"] * len(header)
-        lines = [
-            "| " + " | ".join(header) + " |",
-            "| " + " | ".join(sep) + " |",
-        ]
-        for row in rows[1:]:
-            cells = [str(c or "") for c in row]
-            while len(cells) < len(header):
-                cells.append("")
-            lines.append("| " + " | ".join(cells[:len(header)]) + " |")
-        return "\n".join(lines)
-
-    def _extract_page_tables(self, page: fitz.Page) -> list[PaperTable]:
-        tables: list[PaperTable] = []
-        if not hasattr(page, "find_tables"):
-            return tables
-        try:
-            tab_finder = page.find_tables()
-            for tab in tab_finder.tables:
-                rows = tab.extract()
-                if not rows:
-                    continue
-                md = self._rows_to_markdown(rows)
-                if md:
-                    tables.append(PaperTable(markdown=md))
-        except Exception:
-            pass
-        return tables
-
-    def _iter_page_tables(self, page: fitz.Page):
-        if not hasattr(page, "find_tables"):
-            return
-        try:
-            tab_finder = page.find_tables()
-            for tab in tab_finder.tables:
-                if getattr(tab, "bbox", None) is None:
-                    continue
-                yield tab
-        except Exception:
-            return
-
-    @staticmethod
-    def _rows_to_markdown(rows: list[list[str | None]]) -> str:
-        if not rows:
-            return ""
-        header = [str(c or "") for c in rows[0]]
-        sep = ["---"] * len(header)
-        lines = [
-            "| " + " | ".join(header) + " |",
-            "| " + " | ".join(sep) + " |",
-        ]
-        for row in rows[1:]:
-            cells = [str(c or "") for c in row]
-            while len(cells) < len(header):
-                cells.append("")
-            lines.append("| " + " | ".join(cells[:len(header)]) + " |")
-        return "\n".join(lines)
-
-    def _extract_page_tables(self, page: fitz.Page) -> list[PaperTable]:
-        tables: list[PaperTable] = []
-        if not hasattr(page, "find_tables"):
-            return tables
-        try:
-            tab_finder = page.find_tables()
-            for tab in tab_finder.tables:
-                rows = tab.extract()
-                if not rows:
-                    continue
-                md = self._rows_to_markdown(rows)
-                if md:
-                    tables.append(PaperTable(markdown=md))
-        except Exception:
-            pass
-        return tables
-
-    def _iter_page_tables(self, page: fitz.Page):
-        if not hasattr(page, "find_tables"):
-            return
-        try:
-            tab_finder = page.find_tables()
-            for tab in tab_finder.tables:
-                if getattr(tab, "bbox", None) is None:
-                    continue
-                yield tab
-        except Exception:
-            return
-
-    @staticmethod
-    def _rows_to_markdown(rows: list[list[str | None]]) -> str:
-        if not rows:
-            return ""
-        header = [str(c or "") for c in rows[0]]
-        sep = ["---"] * len(header)
-        lines = [
-            "| " + " | ".join(header) + " |",
-            "| " + " | ".join(sep) + " |",
-        ]
-        for row in rows[1:]:
-            cells = [str(c or "") for c in row]
-            while len(cells) < len(header):
-                cells.append("")
-            lines.append("| " + " | ".join(cells[:len(header)]) + " |")
-        return "\n".join(lines)
-
-    def _extract_page_tables(self, page: fitz.Page) -> list[PaperTable]:
-        tables: list[PaperTable] = []
-        if not hasattr(page, "find_tables"):
-            return tables
-        try:
-            tab_finder = page.find_tables()
-            for tab in tab_finder.tables:
-                rows = tab.extract()
-                if not rows:
-                    continue
-                md = self._rows_to_markdown(rows)
-                if md:
-                    tables.append(PaperTable(markdown=md))
-        except Exception:
-            pass
-        return tables
-
-    def _iter_page_tables(self, page: fitz.Page):
-        if not hasattr(page, "find_tables"):
-            return
-        try:
-            tab_finder = page.find_tables()
-            for tab in tab_finder.tables:
-                if getattr(tab, "bbox", None) is None:
-                    continue
-                yield tab
-        except Exception:
-            return
-
-    @staticmethod
-    def _rows_to_markdown(rows: list[list[str | None]]) -> str:
-        if not rows:
-            return ""
-        header = [str(c or "") for c in rows[0]]
-        sep = ["---"] * len(header)
-        lines = [
-            "| " + " | ".join(header) + " |",
-            "| " + " | ".join(sep) + " |",
-        ]
-        for row in rows[1:]:
-            cells = [str(c or "") for c in row]
-            while len(cells) < len(header):
-                cells.append("")
-            lines.append("| " + " | ".join(cells[:len(header)]) + " |")
-        return "\n".join(lines)
-
-    def _extract_page_tables(self, page: fitz.Page) -> list[PaperTable]:
-        tables: list[PaperTable] = []
-        if not hasattr(page, "find_tables"):
-            return tables
-        try:
-            tab_finder = page.find_tables()
-            for tab in tab_finder.tables:
-                rows = tab.extract()
-                if not rows:
-                    continue
-                md = self._rows_to_markdown(rows)
-                if md:
-                    tables.append(PaperTable(markdown=md))
-        except Exception:
-            pass
-        return tables
-
-    def _iter_page_tables(self, page: fitz.Page):
-        if not hasattr(page, "find_tables"):
-            return
-        try:
-            tab_finder = page.find_tables()
-            for tab in tab_finder.tables:
-                if getattr(tab, "bbox", None) is None:
-                    continue
-                yield tab
-        except Exception:
-            return
-
-    @staticmethod
-    def _rows_to_markdown(rows: list[list[str | None]]) -> str:
-        if not rows:
-            return ""
-        header = [str(c or "") for c in rows[0]]
-        sep = ["---"] * len(header)
-        lines = [
-            "| " + " | ".join(header) + " |",
-            "| " + " | ".join(sep) + " |",
-        ]
-        for row in rows[1:]:
-            cells = [str(c or "") for c in row]
-            while len(cells) < len(header):
-                cells.append("")
-            lines.append("| " + " | ".join(cells[:len(header)]) + " |")
-        return "\n".join(lines)
-
-    def _extract_page_tables(self, page: fitz.Page) -> list[PaperTable]:
-        tables: list[PaperTable] = []
-        if not hasattr(page, "find_tables"):
-            return tables
-        try:
-            tab_finder = page.find_tables()
-            for tab in tab_finder.tables:
-                rows = tab.extract()
-                if not rows:
-                    continue
-                md = self._rows_to_markdown(rows)
-                if md:
-                    tables.append(PaperTable(markdown=md))
-        except Exception:
-            pass
-        return tables
-
-    def _iter_page_tables(self, page: fitz.Page):
-        if not hasattr(page, "find_tables"):
-            return
-        try:
-            tab_finder = page.find_tables()
-            for tab in tab_finder.tables:
-                if getattr(tab, "bbox", None) is None:
-                    continue
-                yield tab
-        except Exception:
-            return
-
-    @staticmethod
-    def _rows_to_markdown(rows: list[list[str | None]]) -> str:
-        if not rows:
-            return ""
-        header = [str(c or "") for c in rows[0]]
-        sep = ["---"] * len(header)
-        lines = [
-            "| " + " | ".join(header) + " |",
-            "| " + " | ".join(sep) + " |",
-        ]
-        for row in rows[1:]:
-            cells = [str(c or "") for c in row]
-            while len(cells) < len(header):
-                cells.append("")
-            lines.append("| " + " | ".join(cells[:len(header)]) + " |")
-        return "\n".join(lines)
-
-    def _extract_page_tables(self, page: fitz.Page) -> list[PaperTable]:
-        tables: list[PaperTable] = []
-        if not hasattr(page, "find_tables"):
-            return tables
-        try:
-            tab_finder = page.find_tables()
-            for tab in tab_finder.tables:
-                rows = tab.extract()
-                if not rows:
-                    continue
-                md = self._rows_to_markdown(rows)
-                if md:
-                    tables.append(PaperTable(markdown=md))
-        except Exception:
-            pass
-        return tables
-
-    def _iter_page_tables(self, page: fitz.Page):
-        if not hasattr(page, "find_tables"):
-            return
-        try:
-            tab_finder = page.find_tables()
-            for tab in tab_finder.tables:
-                if getattr(tab, "bbox", None) is None:
-                    continue
-                yield tab
-        except Exception:
-            return
-
-    @staticmethod
-    def _rows_to_markdown(rows: list[list[str | None]]) -> str:
-        if not rows:
-            return ""
-        header = [str(c or "") for c in rows[0]]
-        sep = ["---"] * len(header)
-        lines = [
-            "| " + " | ".join(header) + " |",
-            "| " + " | ".join(sep) + " |",
-        ]
-        for row in rows[1:]:
-            cells = [str(c or "") for c in row]
-            while len(cells) < len(header):
-                cells.append("")
-            lines.append("| " + " | ".join(cells[:len(header)]) + " |")
-        return "\n".join(lines)
-
-    def _extract_page_tables(self, page: fitz.Page) -> list[PaperTable]:
-        tables: list[PaperTable] = []
-        if not hasattr(page, "find_tables"):
-            return tables
-        try:
-            tab_finder = page.find_tables()
-            for tab in tab_finder.tables:
-                rows = tab.extract()
-                if not rows:
-                    continue
-                md = self._rows_to_markdown(rows)
-                if md:
-                    tables.append(PaperTable(markdown=md))
-        except Exception:
-            pass
-        return tables
-
-    def _iter_page_tables(self, page: fitz.Page):
-        if not hasattr(page, "find_tables"):
-            return
-        try:
-            tab_finder = page.find_tables()
-            for tab in tab_finder.tables:
-                if getattr(tab, "bbox", None) is None:
-                    continue
-                yield tab
-        except Exception:
-            return
-
-    @staticmethod
-    def _rows_to_markdown(rows: list[list[str | None]]) -> str:
-        if not rows:
-            return ""
-        header = [str(c or "") for c in rows[0]]
-        sep = ["---"] * len(header)
-        lines = [
-            "| " + " | ".join(header) + " |",
-            "| " + " | ".join(sep) + " |",
-        ]
-        for row in rows[1:]:
-            cells = [str(c or "") for c in row]
-            while len(cells) < len(header):
-                cells.append("")
-            lines.append("| " + " | ".join(cells[:len(header)]) + " |")
-        return "\n".join(lines)
-
-    def _extract_page_tables(self, page: fitz.Page) -> list[PaperTable]:
-        tables: list[PaperTable] = []
-        if not hasattr(page, "find_tables"):
-            return tables
-        try:
-            tab_finder = page.find_tables()
-            for tab in tab_finder.tables:
-                rows = tab.extract()
-                if not rows:
-                    continue
-                md = self._rows_to_markdown(rows)
-                if md:
-                    tables.append(PaperTable(markdown=md))
-        except Exception:
-            pass
-        return tables
-
-    def _iter_page_tables(self, page: fitz.Page):
-        if not hasattr(page, "find_tables"):
-            return
-        try:
-            tab_finder = page.find_tables()
-            for tab in tab_finder.tables:
-                if getattr(tab, "bbox", None) is None:
-                    continue
-                yield tab
-        except Exception:
-            return
-
-    @staticmethod
-    def _rows_to_markdown(rows: list[list[str | None]]) -> str:
-        if not rows:
-            return ""
-        header = [str(c or "") for c in rows[0]]
-        sep = ["---"] * len(header)
-        lines = [
-            "| " + " | ".join(header) + " |",
-            "| " + " | ".join(sep) + " |",
-        ]
-        for row in rows[1:]:
-            cells = [str(c or "") for c in row]
-            while len(cells) < len(header):
-                cells.append("")
-            lines.append("| " + " | ".join(cells[:len(header)]) + " |")
-        return "\n".join(lines)
-
-    def _extract_page_tables(self, page: fitz.Page) -> list[PaperTable]:
-        tables: list[PaperTable] = []
-        if not hasattr(page, "find_tables"):
-            return tables
-        try:
-            tab_finder = page.find_tables()
-            for tab in tab_finder.tables:
-                rows = tab.extract()
-                if not rows:
-                    continue
-                md = self._rows_to_markdown(rows)
-                if md:
-                    tables.append(PaperTable(markdown=md))
-        except Exception:
-            pass
-        return tables
-
-    def _iter_page_tables(self, page: fitz.Page):
-        if not hasattr(page, "find_tables"):
-            return
-        try:
-            tab_finder = page.find_tables()
-            for tab in tab_finder.tables:
-                if getattr(tab, "bbox", None) is None:
-                    continue
-                yield tab
-        except Exception:
-            return
-
-    @staticmethod
-    def _rows_to_markdown(rows: list[list[str | None]]) -> str:
-        if not rows:
-            return ""
-        header = [str(c or "") for c in rows[0]]
-        sep = ["---"] * len(header)
-        lines = [
-            "| " + " | ".join(header) + " |",
-            "| " + " | ".join(sep) + " |",
-        ]
-        for row in rows[1:]:
-            cells = [str(c or "") for c in row]
-            while len(cells) < len(header):
-                cells.append("")
-            lines.append("| " + " | ".join(cells[:len(header)]) + " |")
-        return "\n".join(lines)
-
-    def _extract_page_tables(self, page: fitz.Page) -> list[PaperTable]:
-        tables: list[PaperTable] = []
-        if not hasattr(page, "find_tables"):
-            return tables
-        try:
-            tab_finder = page.find_tables()
-            for tab in tab_finder.tables:
-                rows = tab.extract()
-                if not rows:
-                    continue
-                md = self._rows_to_markdown(rows)
-                if md:
-                    tables.append(PaperTable(markdown=md))
-        except Exception:
-            pass
-        return tables
-
-    def _iter_page_tables(self, page: fitz.Page):
-        if not hasattr(page, "find_tables"):
-            return
-        try:
-            tab_finder = page.find_tables()
-            for tab in tab_finder.tables:
-                if getattr(tab, "bbox", None) is None:
-                    continue
-                yield tab
-        except Exception:
-            return
-
-    @staticmethod
-    def _rows_to_markdown(rows: list[list[str | None]]) -> str:
-        if not rows:
-            return ""
-        header = [str(c or "") for c in rows[0]]
-        sep = ["---"] * len(header)
-        lines = [
-            "| " + " | ".join(header) + " |",
-            "| " + " | ".join(sep) + " |",
-        ]
-        for row in rows[1:]:
-            cells = [str(c or "") for c in row]
-            while len(cells) < len(header):
-                cells.append("")
-            lines.append("| " + " | ".join(cells[:len(header)]) + " |")
-        return "\n".join(lines)
-
-    def _extract_page_tables(self, page: fitz.Page) -> list[PaperTable]:
-        tables: list[PaperTable] = []
-        if not hasattr(page, "find_tables"):
-            return tables
-        try:
-            tab_finder = page.find_tables()
-            for tab in tab_finder.tables:
-                rows = tab.extract()
-                if not rows:
-                    continue
-                md = self._rows_to_markdown(rows)
-                if md:
-                    tables.append(PaperTable(markdown=md))
-        except Exception:
-            pass
-        return tables
-
-    def _iter_page_tables(self, page: fitz.Page):
-        if not hasattr(page, "find_tables"):
-            return
-        try:
-            tab_finder = page.find_tables()
-            for tab in tab_finder.tables:
-                if getattr(tab, "bbox", None) is None:
-                    continue
-                yield tab
-        except Exception:
-            return
-
-    @staticmethod
-    def _rows_to_markdown(rows: list[list[str | None]]) -> str:
-        if not rows:
-            return ""
-        header = [str(c or "") for c in rows[0]]
-        sep = ["---"] * len(header)
-        lines = [
-            "| " + " | ".join(header) + " |",
-            "| " + " | ".join(sep) + " |",
-        ]
-        for row in rows[1:]:
-            cells = [str(c or "") for c in row]
-            while len(cells) < len(header):
-                cells.append("")
-            lines.append("| " + " | ".join(cells[:len(header)]) + " |")
-        return "\n".join(lines)
-
-    def _extract_page_tables(self, page: fitz.Page) -> list[PaperTable]:
-        tables: list[PaperTable] = []
-        if not hasattr(page, "find_tables"):
-            return tables
-        try:
-            tab_finder = page.find_tables()
-            for tab in tab_finder.tables:
-                rows = tab.extract()
-                if not rows:
-                    continue
-                md = self._rows_to_markdown(rows)
-                if md:
-                    tables.append(PaperTable(markdown=md))
-        except Exception:
-            pass
-        return tables
-
-    def _iter_page_tables(self, page: fitz.Page):
-        if not hasattr(page, "find_tables"):
-            return
-        try:
-            tab_finder = page.find_tables()
-            for tab in tab_finder.tables:
-                if getattr(tab, "bbox", None) is None:
-                    continue
-                yield tab
-        except Exception:
-            return
-
-    @staticmethod
-    def _rows_to_markdown(rows: list[list[str | None]]) -> str:
-        if not rows:
-            return ""
-        header = [str(c or "") for c in rows[0]]
-        sep = ["---"] * len(header)
-        lines = [
-            "| " + " | ".join(header) + " |",
-            "| " + " | ".join(sep) + " |",
-        ]
-        for row in rows[1:]:
-            cells = [str(c or "") for c in row]
-            while len(cells) < len(header):
-                cells.append("")
-            lines.append("| " + " | ".join(cells[:len(header)]) + " |")
-        return "\n".join(lines)
-
-    def _extract_page_tables(self, page: fitz.Page) -> list[PaperTable]:
-        tables: list[PaperTable] = []
-        if not hasattr(page, "find_tables"):
-            return tables
-        try:
-            tab_finder = page.find_tables()
-            for tab in tab_finder.tables:
-                rows = tab.extract()
-                if not rows:
-                    continue
-                md = self._rows_to_markdown(rows)
-                if md:
-                    tables.append(PaperTable(markdown=md))
-        except Exception:
-            pass
-        return tables
-
-    def _iter_page_tables(self, page: fitz.Page):
-        if not hasattr(page, "find_tables"):
-            return
-        try:
-            tab_finder = page.find_tables()
-            for tab in tab_finder.tables:
-                if getattr(tab, "bbox", None) is None:
-                    continue
-                yield tab
-        except Exception:
-            return
-
-    @staticmethod
-    def _rows_to_markdown(rows: list[list[str | None]]) -> str:
-        if not rows:
-            return ""
-        header = [str(c or "") for c in rows[0]]
-        sep = ["---"] * len(header)
-        lines = [
-            "| " + " | ".join(header) + " |",
-            "| " + " | ".join(sep) + " |",
-        ]
-        for row in rows[1:]:
-            cells = [str(c or "") for c in row]
-            while len(cells) < len(header):
-                cells.append("")
-            lines.append("| " + " | ".join(cells[:len(header)]) + " |")
-        return "\n".join(lines)
-
-    def _extract_page_tables(self, page: fitz.Page) -> list[PaperTable]:
-        tables: list[PaperTable] = []
-        if not hasattr(page, "find_tables"):
-            return tables
-        try:
-            tab_finder = page.find_tables()
-            for tab in tab_finder.tables:
-                rows = tab.extract()
-                if not rows:
-                    continue
-                md = self._rows_to_markdown(rows)
-                if md:
-                    tables.append(PaperTable(markdown=md))
-        except Exception:
-            pass
-        return tables
-
-    def _iter_page_tables(self, page: fitz.Page):
-        if not hasattr(page, "find_tables"):
-            return
-        try:
-            tab_finder = page.find_tables()
-            for tab in tab_finder.tables:
-                if getattr(tab, "bbox", None) is None:
-                    continue
-                yield tab
-        except Exception:
-            return
-
-    @staticmethod
-    def _rows_to_markdown(rows: list[list[str | None]]) -> str:
-        if not rows:
-            return ""
-        header = [str(c or "") for c in rows[0]]
-        sep = ["---"] * len(header)
-        lines = [
-            "| " + " | ".join(header) + " |",
-            "| " + " | ".join(sep) + " |",
-        ]
-        for row in rows[1:]:
-            cells = [str(c or "") for c in row]
-            while len(cells) < len(header):
-                cells.append("")
-            lines.append("| " + " | ".join(cells[:len(header)]) + " |")
-        return "\n".join(lines)
 
     def _extract_page_tables(self, page: fitz.Page) -> list[PaperTable]:
         tables: list[PaperTable] = []

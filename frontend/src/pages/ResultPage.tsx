@@ -1,12 +1,59 @@
-import { useEffect, useState, useMemo, useCallback } from 'react'
+import { useEffect, useState, useMemo, useCallback, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Download, MessageSquare, CheckCircle, AlertCircle, FileText, Quote, Pencil, X, Check } from 'lucide-react'
-import { getJobStatus, getPreview, downloadURL, refinePresentation } from '../lib/api'
+import { Download, MessageSquare, CheckCircle, AlertCircle, FileText, Quote, Pencil, X, Check, RefreshCw } from 'lucide-react'
+import { getJobStatus, getPreview, downloadURL, refinePresentation, regenerateNotes } from '../lib/api'
 import { WSClient } from '../lib/ws'
-import type { JobStatus, PreviewSlide, WSEvent } from '../lib/types'
+import type { JobStatus, PreviewSlide, WSEvent, NoteSource } from '../lib/types'
 
-/** Extract [来源: ...] markers from notes text and return highlighted JSX */
-function HighlightedNotes({ text }: { text: string }) {
+/** Render notes with per-sentence hover tooltips showing original paper text */
+function HighlightedNotes({ text, sources }: { text: string; sources?: NoteSource[] | null }) {
+  const [tip, setTip] = useState<{ content: string; x: number; y: number } | null>(null)
+  const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const showTip = (content: string, x: number, y: number) => {
+    if (hideTimer.current) { clearTimeout(hideTimer.current); hideTimer.current = null }
+    setTip({ content, x, y })
+  }
+  const scheduleHide = () => {
+    hideTimer.current = setTimeout(() => setTip(null), 300)
+  }
+  const cancelHide = () => {
+    if (hideTimer.current) { clearTimeout(hideTimer.current); hideTimer.current = null }
+  }
+
+  // If we have structured sources, render each sentence with its own tooltip
+  if (sources && sources.length > 0) {
+    return (
+      <span>
+        {sources.map((s, i) => (
+          <span
+            key={i}
+            className={s.source ? 'notes-sentence has-source' : 'notes-sentence'}
+            onMouseEnter={s.source ? (e) => showTip(s.source!, e.clientX, e.clientY) : undefined}
+            onMouseLeave={s.source ? scheduleHide : undefined}
+          >
+            {s.text}
+          </span>
+        ))}
+        {tip && (
+          <div
+            className="cite-tooltip"
+            style={{
+              left: Math.min(tip.x, window.innerWidth - 640),
+              top: tip.y + 18,
+              maxHeight: Math.max(120, window.innerHeight - tip.y - 36),
+            }}
+            onMouseEnter={cancelHide}
+            onMouseLeave={() => setTip(null)}
+          >
+            {tip.content}
+          </div>
+        )}
+      </span>
+    )
+  }
+
+  // Fallback: parse [来源: "..."] markers from text (legacy format)
   const parts = useMemo(() => {
     const result: { type: 'text' | 'source'; content: string }[] = []
     const regex = /\[来源[:：]\s*([^\]]+)\]/g
@@ -31,15 +78,29 @@ function HighlightedNotes({ text }: { text: string }) {
         part.type === 'source' ? (
           <span
             key={i}
-            className="source-highlight"
-            title={part.content}
+            className="cite-badge"
+            onMouseEnter={(e) => showTip(part.content, e.clientX, e.clientY)}
+            onMouseLeave={scheduleHide}
           >
-            <Quote size={12} style={{ verticalAlign: -1, marginRight: 2, opacity: 0.7 }} />
-            {part.content}
+            来源
           </span>
         ) : (
           <span key={i}>{part.content}</span>
         )
+      )}
+      {tip && (
+        <div
+          className="cite-tooltip"
+          style={{
+            left: Math.min(tip.x, window.innerWidth - 640),
+            top: tip.y + 18,
+            maxHeight: Math.max(120, window.innerHeight - tip.y - 36),
+          }}
+          onMouseEnter={cancelHide}
+          onMouseLeave={() => setTip(null)}
+        >
+          {tip.content}
+        </div>
       )}
     </span>
   )
@@ -59,6 +120,7 @@ export default function ResultPage() {
   const [editDraft, setEditDraft] = useState('')
   // Store locally edited notes (overrides from preview API)
   const [editedNotes, setEditedNotes] = useState<Record<number, string>>({})
+  const [regenLoading, setRegenLoading] = useState(false)
 
   useEffect(() => {
     if (!jobId) return
@@ -154,6 +216,36 @@ export default function ResultPage() {
     }
   }
 
+  const handleRegenerateNotes = async () => {
+    if (!jobId) return
+    const _load = (key: string, fb = ''): string => { try { return localStorage.getItem(key) || fb } catch { return fb } }
+    const provider = _load('gen_provider')
+    const model = _load(`gen_model_${provider}`)
+    const api_key = _load('gen_apiKey')
+    const base_url = _load(`gen_baseUrl_${provider}`) || undefined
+    if (!provider || !model || !api_key) {
+      alert('请先在生成页面填写模型配置')
+      return
+    }
+    setRegenLoading(true)
+    try {
+      const res = await regenerateNotes(jobId, { provider, model, api_key, base_url })
+      // Update slides with new notes and sources
+      setSlides(prev => prev.map(s => ({
+        ...s,
+        notes: res.notes[s.name] ?? s.notes,
+        notes_sources: res.notes_sources?.[s.name] ?? s.notes_sources,
+      })))
+      // Clear any local edits
+      setEditedNotes({})
+    } catch (e: any) {
+      const msg = typeof e?.message === 'string' ? e.message : JSON.stringify(e)
+      alert('重新生成讲稿失败: ' + msg)
+    } finally {
+      setRegenLoading(false)
+    }
+  }
+
   return (
     <div className="result-layout">
       {/* Main Content */}
@@ -223,20 +315,31 @@ export default function ResultPage() {
                     <FileText size={14} style={{ color: 'var(--accent)' }} />
                     <span style={{ fontWeight: 600, fontSize: '0.88rem' }}>第 {selectedSlide + 1} 页讲稿</span>
                   </div>
-                  {editingSlide === selectedSlide ? (
-                    <div style={{ display: 'flex', gap: '0.3rem' }}>
-                      <button className="icon-btn" onClick={saveEdit} title="保存" style={{ width: 28, height: 28 }}>
-                        <Check size={14} />
-                      </button>
-                      <button className="icon-btn" onClick={cancelEdit} title="取消" style={{ width: 28, height: 28 }}>
-                        <X size={14} />
-                      </button>
-                    </div>
-                  ) : (
-                    <button className="icon-btn" onClick={() => startEdit(selectedSlide)} title="编辑讲稿" style={{ width: 28, height: 28 }}>
-                      <Pencil size={13} />
+                  <div style={{ display: 'flex', gap: '0.3rem' }}>
+                    <button
+                      className="icon-btn"
+                      onClick={handleRegenerateNotes}
+                      disabled={regenLoading}
+                      title="重新生成全部讲稿"
+                      style={{ width: 28, height: 28, opacity: regenLoading ? 0.5 : 1 }}
+                    >
+                      <RefreshCw size={13} className={regenLoading ? 'spin' : ''} />
                     </button>
-                  )}
+                    {editingSlide === selectedSlide ? (
+                      <>
+                        <button className="icon-btn" onClick={saveEdit} title="保存" style={{ width: 28, height: 28 }}>
+                          <Check size={14} />
+                        </button>
+                        <button className="icon-btn" onClick={cancelEdit} title="取消" style={{ width: 28, height: 28 }}>
+                          <X size={14} />
+                        </button>
+                      </>
+                    ) : (
+                      <button className="icon-btn" onClick={() => startEdit(selectedSlide)} title="编辑讲稿" style={{ width: 28, height: 28 }}>
+                        <Pencil size={13} />
+                      </button>
+                    )}
+                  </div>
                 </div>
                 {editingSlide === selectedSlide ? (
                   <textarea
@@ -247,7 +350,7 @@ export default function ResultPage() {
                   />
                 ) : (
                   <div className="result-notes-text">
-                    {currentNotes ? <HighlightedNotes text={currentNotes} /> : <span style={{ color: 'var(--muted)', fontStyle: 'italic' }}>（无讲稿）</span>}
+                    {currentNotes ? <HighlightedNotes text={currentNotes} sources={slides[selectedSlide]?.notes_sources} /> : <span style={{ color: 'var(--muted)', fontStyle: 'italic' }}>（无讲稿）</span>}
                   </div>
                 )}
               </div>

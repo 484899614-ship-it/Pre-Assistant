@@ -31,5 +31,7 @@ input_汇报.pptx
 template.pptx
 code.txt
 index.txt
+_test*.py
+*.pdf
 
 # SVG/PPTX conversion module is part of source, keep it

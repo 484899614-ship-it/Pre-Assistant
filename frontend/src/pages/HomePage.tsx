@@ -8,23 +8,19 @@ export default function HomePage() {
       maxWidth: 800, margin: '0 auto', padding: '4rem 2rem', textAlign: 'center',
     }}>
       <h1>Pre-Assistant</h1>
-      <p style={{ color: '#666', fontSize: '1.1rem', marginBottom: '2rem' }}>
-        AI-powered academic paper to presentation converter
+      <p style={{ color: 'var(--muted)', fontSize: '1.1rem', marginBottom: '2rem' }}>
+        AI 驱动的学术论文转演示文稿工具
       </p>
-      <p style={{ color: '#888', marginBottom: '2rem' }}>
-        Upload a PDF paper, and our multi-agent pipeline will analyze the content,
-        design a visual specification, and generate editable SVG slides with
-        critic-guided quality assurance.
+      <p style={{ color: 'var(--muted)', marginBottom: '2rem' }}>
+        上传 PDF 论文，多智能体流水线将自动分析内容、设计视觉规范，
+        并生成可编辑的 SVG 幻灯片，配合审阅引导的质量保证。
       </p>
       <button
+        className="primary-button"
         onClick={() => navigate('/generate')}
-        style={{
-          padding: '0.8rem 2rem', fontSize: '1.1rem',
-          background: '#1A365D', color: 'white', border: 'none',
-          borderRadius: 8, cursor: 'pointer',
-        }}
+        style={{ fontSize: '1.1rem' }}
       >
-        Start
+        开始使用
       </button>
     </div>
   )

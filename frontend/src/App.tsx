@@ -1,5 +1,5 @@
-import { Routes, Route, Navigate, Link, useLocation } from 'react-router-dom'
-import { LayoutDashboard, Presentation, Sun, Moon, ChevronLeft, ChevronRight, Trash2 } from 'lucide-react'
+import { Routes, Route, Navigate, Link, useLocation, useNavigate } from 'react-router-dom'
+import { LayoutDashboard, Presentation, Sun, Moon, ChevronLeft, Trash2 } from 'lucide-react'
 import { useState, useEffect, useCallback } from 'react'
 import { getHistory, deleteSession } from './lib/api'
 import type { HistoryItem } from './lib/api'
@@ -41,7 +41,7 @@ function Header() {
 
 function Sidebar() {
   const location = useLocation()
-  const [collapsed, setCollapsed] = useState(false)
+  const navigate = useNavigate()
   const [history, setHistory] = useState<HistoryItem[]>([])
   const [deleting, setDeleting] = useState<string | null>(null)
 
@@ -76,15 +76,14 @@ function Sidebar() {
   }
 
   return (
-    <aside className={`sidebar ${collapsed ? 'sidebar-collapsed' : ''}`}>
+    <aside className="sidebar">
       {/* Toggle */}
-      <button className="sidebar-toggle" onClick={() => setCollapsed(v => !v)} title={collapsed ? '展开' : '收起'}>
-        {collapsed ? <ChevronRight size={18} /> : <ChevronLeft size={18} />}
+      <button className="sidebar-toggle" onClick={() => navigate('/')} title="返回首页">
+        <ChevronLeft size={18} />
       </button>
 
       {/* Navigation */}
-      {!collapsed && (
-        <div className="sidebar-section">
+      <div className="sidebar-section">
           <span className="sidebar-label">导航</span>
           {navLinks.map(link => (
             <Link key={link.to} to={link.disabled ? '#' : link.to} style={{ textDecoration: 'none' }}>
@@ -99,11 +98,9 @@ function Sidebar() {
             </Link>
           ))}
         </div>
-      )}
 
       {/* History */}
-      {!collapsed && (
-        <div className="sidebar-section sidebar-history-section">
+      <div className="sidebar-section sidebar-history-section">
           <span className="sidebar-label">最近记录</span>
           <div className="history-list">
             {history.length === 0 && (
@@ -152,7 +149,6 @@ function Sidebar() {
             })}
           </div>
         </div>
-      )}
     </aside>
   )
 }

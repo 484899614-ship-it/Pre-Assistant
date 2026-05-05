@@ -12,12 +12,15 @@ notes saved as ``notes.json`` in the project directory.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 
 from backend.config import settings
+
+logger = logging.getLogger(__name__)
 from backend.generator.svg_critic import CriticConfig, CriticReport, Violation, check_svg
 from backend.llm import LLMMessage, LLMProvider, LLMResponse
 from backend.orchestrator.manuscript import split_manuscript_pages
@@ -673,22 +676,23 @@ async def generate_svg_pages(
 # ---------------------------------------------------------------------------
 
 _NOTES_SYSTEM_PROMPT = """\
-You are a professional presentation speaker-notes writer. Given the content
-outline for each slide, produce concise, conversational speaker notes.
+You are a professional presentation speaker-notes writer. Given the slide
+outline and the original paper text, produce detailed speaker notes.
 
-Rules:
-- Write 2-5 sentences per slide
-- Include key points as numbered items
-- Every slide (except the first) starts with a [Transition] phrase bridging
-  from the previous slide
-- Use stage direction markers: [Pause] after key content, [Transition] to
-  bridge slides, [Data] before citing numbers
-- For Chinese presentations, use: [过渡] [停顿] [数据] instead of English markers
-- IMPORTANT: For every key claim or data point, cite the EXACT original sentence
-  from the paper using [来源: "exact quote here"] markers. The quote must be
-  a verbatim sentence from the paper, not a section reference or paraphrase.
-  Example: [来源: "Our model achieves 95.3% accuracy on the benchmark dataset."]
-- Output ONLY a JSON object: {"speaker_notes": {"page_stem": "notes text...", ...}}
+## Content Rules
+- Write notes in the same language as the presentation.
+- Each slide's notes must ONLY discuss THAT slide's own content.
+- Every slide (except the first) starts with a [过渡] transition phrase.
+- Use [停顿] after key points and [数据] before mentioning statistics.
+- CRITICAL: When citing ANY number from the paper, you MUST use the EXACT
+  same number format as in the original paper. Do NOT round, approximate,
+  or reformat numbers. For example, if the paper says 0.292, write 0.292,
+  NOT 0.30 or 0.29. If the paper says 1,555,806, write 1,555,806, NOT
+  1.56 million. Exact numbers are essential for source tracking.
+
+## Output Format
+Output ONLY a JSON object: {"speaker_notes": {"slide_key": "notes text...", ...}}
+Values must be plain strings, NOT nested objects.
 """
 
 _NOTES_JSON_RE = re.compile(r'\{[\s\S]*"speaker_notes"[\s\S]*\}')
@@ -702,6 +706,7 @@ async def generate_speaker_notes(
     *,
     language: str = "zh",
     paper_text: str = "",
+    speech_minutes: int | None = None,
 ) -> dict[str, str]:
     """Generate speaker notes for all slides in one batch call.
 
@@ -715,8 +720,8 @@ async def generate_speaker_notes(
     for i, page_content in enumerate(pages):
         page_name = _make_page_name(i + 1, page_content)
         stem = f"{i + 1:02d}_{page_name}"
-        # Trim page content to key points only
-        trimmed = page_content.strip()[:600]
+        # Trim page content — use more context for longer notes
+        trimmed = page_content.strip()[:1200]
         outline_parts.append(f"### Slide {stem}\n{trimmed}")
 
     outline_text = "\n\n".join(outline_parts)
@@ -728,12 +733,36 @@ async def generate_speaker_notes(
         paper_section = f"\n\n## Original Paper Text (for citations)\n\n{paper_text[:12000]}\n"
 
     locale_marker = "中文" if language.startswith("zh") else "English"
+    lang_instruction = "请用中文撰写所有演讲讲稿。" if language.startswith("zh") else "Write all speaker notes in English."
+
+    # Build notes length instruction based on speech_minutes
+    notes_length_instruction = ""
+    if speech_minutes and speech_minutes > 0:
+        total_chars = speech_minutes * 130
+        num_pages = len(pages)
+        chars_per_slide = total_chars // max(num_pages, 1)
+        notes_length_instruction = (
+            f"\nLENGTH REQUIREMENT: The total speech duration is {speech_minutes} minutes. "
+            f"At ~130 characters per minute, write approximately {chars_per_slide} characters "
+            f"of notes per slide (total ~{total_chars} characters across {num_pages} slides). "
+            f"Expand each slide's notes with sufficient detail, explanations, and evidence "
+            f"to reach this target. Do NOT be overly concise.\n"
+        )
+    else:
+        notes_length_instruction = (
+            "\nWrite detailed speaker notes for each slide. Each slide should have "
+            "approximately 300-500 characters of notes, enough for a speaker to present "
+            "for about 2-3 minutes. Expand with explanations, evidence, and transitions. "
+            "Do NOT be overly concise — the notes should be a near-complete script.\n"
+        )
+
     user_msg = (
-        f"Below is the slide-by-slide content outline ({locale_marker}). "
-        f"Generate speaker notes for every slide. "
-        f"Use [来源: \"exact quote\"] markers to cite verbatim sentences from the paper.\n\n"
-        f"{outline_text}"
-        f"{paper_section}\n\n"
+        f"{lang_instruction}\n\n"
+        f"Below is the slide-by-slide content outline ({locale_marker}).\n\n"
+        f"{notes_length_instruction}"
+        f"Each slide's notes must ONLY discuss THAT slide's own content.\n\n"
+        f"--- SLIDE OUTLINE ---\n\n"
+        f"{outline_text}\n\n"
         f'Respond with ONLY a JSON object: {{"speaker_notes": {{"page_stem": "notes..."}}}}'
     )
 
@@ -742,7 +771,7 @@ async def generate_speaker_notes(
         LLMMessage.user(user_msg),
     ]
 
-    response = await llm.chat(conversation, model, temperature=0.5, max_tokens=8192)
+    response = await llm.chat(conversation, model, temperature=0.5, max_tokens=16384)
     notes: dict[str, str] = {}
 
     # Try to parse JSON from response
@@ -750,7 +779,13 @@ async def generate_speaker_notes(
     if json_match:
         try:
             data = json.loads(json_match.group())
-            notes = data.get("speaker_notes", {})
+            raw_notes = data.get("speaker_notes", {})
+            for key, val in raw_notes.items():
+                if isinstance(val, dict):
+                    # Handle {"notes": "...", "citations": [...]} format
+                    notes[key] = val.get("notes", "")
+                elif isinstance(val, str):
+                    notes[key] = val
         except json.JSONDecodeError:
             pass
 
@@ -759,15 +794,104 @@ async def generate_speaker_notes(
         for i, page_content in enumerate(pages):
             page_name = _make_page_name(i + 1, page_content)
             stem = f"{i + 1:02d}_{page_name}"
-            # Extract first heading as simple notes
             heading_match = re.match(r"^##?\s+(.+)$", page_content, re.MULTILINE)
             if heading_match:
                 notes[stem] = f"[过渡] 接下来介绍{heading_match.group(1).strip()}。"
             else:
                 notes[stem] = f"第{i + 1}页演讲讲稿。"
 
-    # Save as notes.json
+    # ── Auto-match notes sentences to paper text ──
+    # For each sentence in the notes, find the most relevant sentence from the
+    # original paper text.  Store results as a sidecar mapping that the
+    # frontend can use to show tooltips on hover.
+    paper_sentences: list[str] = []
+    if paper_text:
+        # Pre-process: rejoin hyphenated line breaks (e.g. "percent-\nage" → "percentage")
+        clean_text = re.sub(r'(\w)-\s*\n\s*(\w)', r'\1\2', paper_text)
+        # Replace remaining newlines with spaces (newlines are just formatting, not sentence boundaries)
+        clean_text = re.sub(r'\n+', ' ', clean_text)
+        # Split into sentences by sentence-ending punctuation, avoiding decimal points
+        paper_sentences = re.split(r'(?<=[.。！？；])(?!\d)\s+', clean_text)
+        # Merge fragments that are too short (<50 chars) with the previous sentence
+        merged = []
+        for s in paper_sentences:
+            s = s.strip()
+            if not s:
+                continue
+            if merged and (len(s) < 50 or not re.search(r'[.。！？；]$', s)):
+                merged[-1] = merged[-1] + ' ' + s
+            else:
+                merged.append(s)
+        paper_sentences = [s for s in merged if len(s.strip()) > 15]
+
+    def _find_paper_match(sent: str) -> str | None:
+        """Find the best-matching paper sentence for a notes sentence."""
+        if not paper_sentences or len(sent) < 6:
+            return None
+        # Extract numbers (including decimals) — these are the strongest matching signals
+        numbers = re.findall(r'\d+\.?\d*', re.sub(r'(\d)%', r'\1', sent))
+        has_numbers = len(numbers) > 0
+
+        # Extract English keywords (Chinese chars don't match English paper text)
+        tokens = re.findall(r'[a-zA-Z_]\w*', sent.lower())
+        tokens = [t for t in tokens if len(t) > 2]
+        if not tokens and not numbers:
+            return None
+
+        best_score = 0.0
+        best_match = None
+        for ps in paper_sentences:
+            ps_lower = ps.lower()
+            kw_score = sum(1 for t in tokens if t in ps_lower)
+            # Number match: exact substring match (works because we now
+            # preserve original number format in notes)
+            num_score = sum(3 for n in numbers if n in ps)
+            total_score = kw_score + num_score
+            if total_score <= 0:
+                continue
+            if has_numbers:
+                if num_score > 0 or kw_score >= 2:
+                    if total_score > best_score:
+                        best_score = total_score
+                        best_match = ps
+            else:
+                if kw_score >= 2 and total_score > best_score:
+                    best_score = total_score
+                    best_match = ps
+        return best_match
+
+    # Build sentence-level source mapping
+    notes_sources: dict[str, list[dict]] = {}
+    for stem, note_text in notes.items():
+        # Split notes into sentences by Chinese/English sentence boundaries
+        # Avoid splitting on decimal points (e.g. 0.292) — use negative lookbehind for digits
+        raw_sents = re.split(r'(?<=[。！？])(?!\d)\s*|(?<=[.]\s)(?=\S)', note_text)
+        refined = []
+        for s in raw_sents:
+            s = s.strip()
+            if not s:
+                continue
+            if len(s) > 80:
+                # Split on ；(semicolon) for long sentences
+                subs = re.split(r'(?<=[；;])\s*', s)
+                refined.extend([p.strip() for p in subs if p.strip()])
+            else:
+                refined.append(s)
+        sources = []
+        for s in refined:
+            match = _find_paper_match(s)
+            sources.append({
+                "text": s,
+                "source": match,  # None if no match found
+            })
+        notes_sources[stem] = sources
+
+    # Save notes.json (plain string values, compatible with old format)
     notes_path = project_dir / "notes.json"
     notes_path.write_text(json.dumps(notes, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # Save notes_sources.json (sentence-level source mapping)
+    sources_path = project_dir / "notes_sources.json"
+    sources_path.write_text(json.dumps(notes_sources, ensure_ascii=False, indent=2), encoding="utf-8")
 
     return notes

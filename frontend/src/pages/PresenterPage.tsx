@@ -5,53 +5,107 @@ import {
 } from 'lucide-react'
 
 /** Render speaker notes with markers highlighted:
- *  - [来源: "exact quote"] → purple highlight showing the quoted text, hover for full quote
+ *  - [来源: "exact quote"] → styled badge with tooltip at mouse position
  *  - [停顿] [过渡] [数据] etc. → subtle gray stage directions
  */
-function HighlightedNotes({ text }: { text: string }) {
-  // Split on all bracket markers
+function HighlightedNotes({ text, sources }: { text: string; sources?: import('../lib/types').NoteSource[] | null }) {
+  const [tip, setTip] = useState<{ content: string; x: number; y: number } | null>(null)
+  const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const showTip = (content: string, x: number, y: number) => {
+    if (hideTimer.current) { clearTimeout(hideTimer.current); hideTimer.current = null }
+    setTip({ content, x, y })
+  }
+  const scheduleHide = () => {
+    hideTimer.current = setTimeout(() => setTip(null), 300)
+  }
+  const cancelHide = () => {
+    if (hideTimer.current) { clearTimeout(hideTimer.current); hideTimer.current = null }
+  }
+
+  // If we have structured sources, render each sentence with its own tooltip
+  if (sources && sources.length > 0) {
+    return (
+      <span>
+        {sources.map((s, i) => {
+          if (/^\[(停顿|过渡|数据|Pause|Transition|Data)\]$/i.test(s.text)) {
+            return (
+              <span key={i} style={{ color: 'rgba(107, 114, 128, 0.6)', fontSize: '0.85em', fontStyle: 'italic' }}>
+                {s.text}
+              </span>
+            )
+          }
+          return (
+            <span
+              key={i}
+              className={s.source ? 'notes-sentence has-source' : 'notes-sentence'}
+              onMouseEnter={s.source ? (e) => showTip(s.source!, e.clientX, e.clientY) : undefined}
+              onMouseLeave={s.source ? scheduleHide : undefined}
+            >
+              {s.text}
+            </span>
+          )
+        })}
+        {tip && (
+          <div
+            className="cite-tooltip"
+            style={{
+              left: Math.min(tip.x, window.innerWidth - 640),
+              top: tip.y + 18,
+              maxHeight: Math.max(120, window.innerHeight - tip.y - 36),
+            }}
+            onMouseEnter={cancelHide}
+            onMouseLeave={() => setTip(null)}
+          >
+            {tip.content}
+          </div>
+        )}
+      </span>
+    )
+  }
+
+  // Fallback: parse [来源: "..."] markers from text (legacy format)
   const parts = text.split(/(\[(?:来源[:：][^\]]*|停顿|过渡|数据|Pause|Transition|Data)\])/gi)
   return (
     <>
       {parts.map((part, i) => {
-        // [来源: "exact quote"] — source citation
         const src = part.match(/^\[来源[:：]\s*(.*)\]$/i)
         if (src) {
           return (
             <span
               key={i}
-              style={{
-                background: 'rgba(99, 102, 241, 0.12)',
-                borderBottom: '1px dashed rgba(99, 102, 241, 0.5)',
-                cursor: 'help',
-                borderRadius: 2,
-                padding: '1px 3px',
-                fontSize: '0.92em',
-                color: '#4f46e5',
-              }}
-              title={src[1]}
+              className="cite-badge"
+              onMouseEnter={(e) => showTip(src[1], e.clientX, e.clientY)}
+              onMouseLeave={scheduleHide}
             >
-              {src[1]}
+              来源
             </span>
           )
         }
-        // Stage direction markers
         if (/^\[(停顿|过渡|数据|Pause|Transition|Data)\]$/i.test(part)) {
           return (
-            <span
-              key={i}
-              style={{
-                color: 'rgba(107, 114, 128, 0.6)',
-                fontSize: '0.85em',
-                fontStyle: 'italic',
-              }}
-            >
+            <span key={i} style={{ color: 'rgba(107, 114, 128, 0.6)', fontSize: '0.85em', fontStyle: 'italic' }}>
               {part}
             </span>
           )
         }
         return <span key={i}>{part}</span>
       })}
+
+      {tip && (
+        <div
+          className="cite-tooltip"
+          style={{
+            left: Math.min(tip.x, window.innerWidth - 640),
+            top: tip.y + 18,
+            maxHeight: Math.max(120, window.innerHeight - tip.y - 36),
+          }}
+          onMouseEnter={cancelHide}
+          onMouseLeave={() => setTip(null)}
+        >
+          {tip.content}
+        </div>
+      )}
     </>
   )
 }
@@ -64,6 +118,7 @@ interface SlideData {
   index: number
   content: string  // SVG HTML or image URL
   notes: string
+  notes_sources?: import('../lib/types').NoteSource[] | null
   type: 'svg' | 'image'
 }
 
@@ -127,6 +182,7 @@ function SourceSelect({
         index: i + 1,
         content: s.content,
         notes: s.notes || '',
+        notes_sources: s.notes_sources,
         type: 'svg' as const,
       }))
       notesMap = Object.fromEntries(slides.map(s => [s.index, s.notes]))
@@ -162,15 +218,22 @@ function SourceSelect({
       try {
         const form = new FormData()
         form.append('file', noteFile)
+        if (slides.length > 0) {
+          form.append('total_slides', String(slides.length))
+        }
         const res = await fetch('/api/presenter/upload-notes', { method: 'POST', body: form })
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}))
+          throw new Error(err.detail || `HTTP ${res.status}`)
+        }
         const data = await res.json()
         for (const [page, text] of Object.entries(data.notes)) {
           notesMap[parseInt(page)] = text as string
         }
         // Merge notes into slides
         slides = slides.map(s => ({ ...s, notes: notesMap[s.index] || s.notes }))
-      } catch (e) {
-        alert('讲稿上传失败')
+      } catch (e: any) {
+        alert('讲稿上传失败: ' + (e.message || '未知错误'))
       }
       setUploadingNotes(false)
     } else if (noteSource === null && slideSource === 'generated' && selectedJob) {
@@ -201,7 +264,7 @@ function SourceSelect({
             style={{ flex: 1 }}
             onClick={() => setSlideSource('generated')}
           >
-            使用已生成的PPT
+            使用已生成的幻灯片
           </button>
           <button
             className={`secondary-button ${slideSource === 'upload' ? 'primary-button' : ''}`}
@@ -209,7 +272,7 @@ function SourceSelect({
             onClick={() => setSlideSource('upload')}
           >
             <FileUp size={14} style={{ marginRight: 4, verticalAlign: -2 }} />
-            上传PPT文件
+            上传幻灯片
           </button>
         </div>
 
@@ -237,9 +300,12 @@ function SourceSelect({
           <div style={{ marginTop: '1rem' }}>
             <label className="upload-zone" style={{ minHeight: 80, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
               <Upload size={20} />
-              <span>{slideFile ? slideFile.name : '选择 PPT / PDF 文件'}</span>
-              <input type="file" accept=".pdf,.pptx" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) setSlideFile(f) }} />
+              <span>{slideFile ? slideFile.name : '选择 PDF 文件'}</span>
+              <input type="file" accept=".pdf" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) setSlideFile(f) }} />
             </label>
+            <p style={{ color: 'var(--muted)', fontSize: '0.78rem', marginTop: '0.5rem', textAlign: 'center' }}>
+              将 PPT 文件转换成 PDF 格式效果更好
+            </p>
           </div>
         )}
       </div>
@@ -484,7 +550,7 @@ function PresenterView({
           <div className="presenter-notes-content" ref={notesScrollRef}>
             <div className="presenter-notes-current">
               <div className="presenter-notes-label">第 {current + 1} 页</div>
-              <div className="presenter-notes-text"><HighlightedNotes text={currentNotes || '（无逐字稿）'} /></div>
+              <div className="presenter-notes-text"><HighlightedNotes text={currentNotes || '（无逐字稿）'} sources={currentSlide?.notes_sources} /></div>
             </div>
             {nextSlide && nextNotes && (
               <div className="presenter-notes-next" ref={nextNotesRef}>

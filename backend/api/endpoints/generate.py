@@ -8,6 +8,19 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, status
 
+
+def _accent_from_primary(hex_color: str) -> str:
+    """Generate a lighter accent color from a dark primary hex color."""
+    hex_color = hex_color.lstrip("#")
+    if len(hex_color) != 6:
+        return "#4A90D9"
+    r, g, b = int(hex_color[:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
+    # Shift hue towards blue and lighten
+    r = min(255, r + 60)
+    g = min(255, g + 40)
+    b = min(255, b + 80)
+    return f"#{r:02X}{g:02X}{b:02X}"
+
 from backend.api.schemas import GenerateRequest, GenerateResponse
 from backend.config import settings
 from backend.session.manager import session_manager
@@ -82,6 +95,18 @@ async def generate_presentation(request: GenerateRequest) -> GenerateResponse:
         instruction=request.instruction,
     )
 
+    # Build style_overrides: merge density + theme_color
+    style_overrides_dict = (
+        request.options.style_overrides.model_dump(exclude_none=True)
+        if request.options.style_overrides
+        else {}
+    )
+    if request.options.theme_color:
+        style_overrides_dict["palette"] = [
+            request.options.theme_color,
+            _accent_from_primary(request.options.theme_color),
+        ]
+
     pipeline_request = GenerationRequest(
         file_path=session.file_path,
         source_type="pdf",
@@ -96,14 +121,12 @@ async def generate_presentation(request: GenerateRequest) -> GenerateResponse:
         language=request.options.language,
         detail_level=request.options.detail_level,
         timeout_seconds=request.options.timeout_seconds,
-        style_overrides=(
-            request.options.style_overrides.model_dump(exclude_none=True)
-            if request.options.style_overrides
-            else None
-        ),
+        style_overrides=style_overrides_dict or None,
         enable_visual_critic=request.options.enable_visual_critic,
         confirm_outline=True,
         quick_mode=request.options.mode == "quick",
+        speech_minutes=request.options.speech_minutes,
+        theme_color=request.options.theme_color,
     )
 
     task = asyncio.create_task(_run_generation_job(job.id, pipeline_request))

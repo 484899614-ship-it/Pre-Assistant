@@ -46,6 +46,8 @@ class GenerationRequest:
     enable_visual_critic: bool = False
     confirm_outline: bool = True
     quick_mode: bool = False
+    speech_minutes: int | None = None
+    theme_color: str | None = None
 
 
 @dataclass
@@ -255,6 +257,7 @@ async def _run_stages_3_to_6(
             manuscript, project_dir, llm, request.model,
             language=request.language,
             paper_text=_paper_text,
+            speech_minutes=request.speech_minutes,
         )
     ) if not request.quick_mode else None
 
@@ -285,6 +288,7 @@ async def _run_stages_3_to_6(
                 manuscript, project_dir, llm, request.model,
                 language=request.language,
                 paper_text=_paper_text,
+                speech_minutes=request.speech_minutes,
             )
             yield ProgressEvent("notes", "complete", f"Generated notes for {len(notes)} slides", 0.93)
         except Exception as exc:

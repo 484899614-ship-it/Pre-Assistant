@@ -25,8 +25,8 @@ export default function GeneratePage() {
   }
 
   const [provider, setProvider] = useState(() => _load('gen_provider'))
-  const [model, setModel] = useState(() => _load('gen_model'))
-  const [baseUrl, setBaseUrl] = useState(() => _load('gen_baseUrl'))
+  const [model, setModel] = useState(() => _load(`gen_model_${_load('gen_provider')}`))
+  const [baseUrl, setBaseUrl] = useState(() => _load(`gen_baseUrl_${_load('gen_provider')}`))
   const [apiKey, setApiKey] = useState(() => _load('gen_apiKey'))
   const [showKey, setShowKey] = useState(false)
 
@@ -37,6 +37,9 @@ export default function GeneratePage() {
   const [instruction, setInstruction] = useState('')
   const [genMode, setGenMode] = useState<'fancy' | 'quick'>('fancy')
   const [numPages, setNumPages] = useState('')
+  const [speechMinutes, setSpeechMinutes] = useState('')
+  const [pptDensity, setPptDensity] = useState<'compact' | 'normal' | 'spacious'>('normal')
+  const [themeColor, setThemeColor] = useState('')
 
   const [file, setFile] = useState<File | null>(null)
   const [uploading, setUploading] = useState(false)
@@ -67,20 +70,19 @@ export default function GeneratePage() {
   }, [freshRequested])
 
   useEffect(() => {
-    if (!provider && providers.length > 0) {
-      const saved = _load('gen_provider')
-      const p = providers.find(x => x.name === saved) || providers[0]
-      setProvider(p.name)
-      setModel(_load(`gen_model_${p.name}`) || p.models[0]?.id || '')
-      setBaseUrl(_load(`gen_baseUrl_${p.name}`) || p.default_base_url || '')
+    if (providers.length > 0 && (!model || !baseUrl)) {
+      const p = providers.find(x => x.name === provider) || providers[0]
+      if (!provider) setProvider(p.name)
+      if (!model) setModel(_load(`gen_model_${p.name}`) || p.models[0]?.id || '')
+      if (!baseUrl) setBaseUrl(_load(`gen_baseUrl_${p.name}`) || p.default_base_url || '')
     }
-  }, [provider, providers])
+  }, [provider, model, baseUrl, providers])
 
   // Persist to localStorage on change
   useEffect(() => { if (provider) _save('gen_provider', provider) }, [provider])
-  useEffect(() => { if (model) _save(`gen_model_${provider}`, model) }, [model, provider])
-  useEffect(() => { if (baseUrl) _save(`gen_baseUrl_${provider}`, baseUrl) }, [baseUrl, provider])
-  useEffect(() => { if (apiKey) _save('gen_apiKey', apiKey) }, [apiKey])
+  useEffect(() => { _save(`gen_model_${provider}`, model) }, [model, provider])
+  useEffect(() => { _save(`gen_baseUrl_${provider}`, baseUrl) }, [baseUrl, provider])
+  useEffect(() => { _save('gen_apiKey', apiKey) }, [apiKey])
 
   // When provider changes, restore last-used model & baseUrl for that provider
   const handleProviderChange = (name: string) => {
@@ -125,7 +127,13 @@ export default function GeneratePage() {
     try {
       await startGeneration(
         { provider, model: model.trim(), api_key: apiKey.trim(), base_url: baseUrl.trim() || undefined },
-        { canvas_format: canvasFormat, style, language, detail_level: detailLevel, mode: genMode, num_pages: numPages ? parseInt(numPages, 10) || undefined : undefined },
+        {
+          canvas_format: canvasFormat, style, language, detail_level: detailLevel, mode: genMode,
+          num_pages: numPages ? parseInt(numPages, 10) || undefined : undefined,
+          speech_minutes: speechMinutes ? parseInt(speechMinutes, 10) || undefined : undefined,
+          theme_color: themeColor || undefined,
+          style_overrides: { density: pptDensity },
+        },
         instruction,
       )
     } catch (e: any) {
@@ -453,12 +461,51 @@ export default function GeneratePage() {
                   onChange={(e) => setNumPages(e.target.value)}
                 />
               </label>
-              <label className="form-field full-span">
-                <span>生成模式</span>
-                <select value={genMode} onChange={(e) => setGenMode(e.target.value as 'fancy' | 'quick')}>
-                  <option value="fancy">精细模式（高质量）</option>
-                  <option value="quick">快速模式（省时）</option>
+              <label className="form-field">
+                <span>PPT 内容</span>
+                <select value={pptDensity} onChange={(e) => setPptDensity(e.target.value as 'compact' | 'normal' | 'spacious')}>
+                  <option value="compact">紧凑</option>
+                  <option value="normal">适中</option>
+                  <option value="spacious">精简</option>
                 </select>
+              </label>
+              <label className="form-field">
+                <span>演讲时间（分钟）</span>
+                <input
+                  type="number"
+                  min="1"
+                  max="60"
+                  placeholder="自动"
+                  value={speechMinutes}
+                  onChange={(e) => setSpeechMinutes(e.target.value)}
+                />
+              </label>
+              <label className="form-field">
+                <span>主题颜色</span>
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  {[
+                    { color: '', label: '默认' },
+                    { color: '#1A365D', label: '深蓝' },
+                    { color: '#065F46', label: '深绿' },
+                    { color: '#7C2D12', label: '深棕' },
+                    { color: '#581C87', label: '紫色' },
+                    { color: '#991B1B', label: '深红' },
+                    { color: '#1E3A5F', label: '海蓝' },
+                    { color: '#334155', label: '石墨' },
+                  ].map(c => (
+                    <button
+                      key={c.color}
+                      type="button"
+                      title={c.label}
+                      onClick={() => setThemeColor(c.color)}
+                      style={{
+                        width: 22, height: 22, borderRadius: '50%', border: themeColor === c.color ? '2px solid var(--accent)' : '2px solid var(--line)',
+                        background: c.color || 'linear-gradient(135deg, #1A365D, #065F46, #581C87)',
+                        cursor: 'pointer', padding: 0, flexShrink: 0,
+                      }}
+                    />
+                  ))}
+                </div>
               </label>
             </div>
             <label className="form-field" style={{ marginTop: '0.7rem' }}>

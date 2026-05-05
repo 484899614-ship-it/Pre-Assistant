@@ -69,6 +69,21 @@ export async function getPreview(jobId: string) {
   return fetchJSON<{ job_id: string; slides: import('./types').PreviewSlide[]; output_path?: string }>(`/preview/${jobId}`)
 }
 
+export async function regenerateNotes(
+  jobId: string,
+  modelConfig: { provider: string; model: string; api_key: string; base_url?: string },
+  options?: { language?: string; speech_minutes?: number },
+) {
+  return fetchJSON<{ job_id: string; notes: Record<string, string>; notes_sources?: Record<string, { text: string; source?: string | null }[]> }>(`/notes/regenerate/${jobId}`, {
+    method: 'POST',
+    body: JSON.stringify({
+      model_config: modelConfig,
+      language: options?.language || 'zh',
+      speech_minutes: options?.speech_minutes || null,
+    }),
+  })
+}
+
 interface RefineResponse {
   job_id: string
 }

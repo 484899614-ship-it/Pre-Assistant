@@ -26,6 +26,9 @@ export interface GenerationOptions {
   detail_level: string
   timeout_seconds?: number | null
   mode: string
+  speech_minutes?: number | null
+  theme_color?: string | null
+  style_overrides?: { density?: string; palette?: string[]; font?: string } | null
 }
 
 export interface GenerateRequest {
@@ -46,6 +49,11 @@ export interface JobStatus {
   data?: Record<string, unknown> | null
 }
 
+export interface NoteSource {
+  text: string
+  source?: string | null
+}
+
 export interface PreviewSlide {
   index: number
   name: string
@@ -53,6 +61,7 @@ export interface PreviewSlide {
   content: string
   notes?: string | null
   original?: string | null
+  notes_sources?: NoteSource[] | null
 }
 
 export interface WSEvent {
