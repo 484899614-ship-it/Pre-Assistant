@@ -1,0 +1,123 @@
+"""Helpers for projecting pipeline events into API and WebSocket state."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from .manager import Job
+
+PIPELINE_STAGES = (
+    "parsing",
+    "research",
+    "outline",
+    "strategy",
+    "generation",
+    "notes",
+    "postprocess",
+    "export",
+    "cancelled",
+)
+
+
+def build_snapshot_event(job_id: str, job: Job) -> dict[str, Any]:
+    """Build a progress-shaped snapshot event for new WebSocket subscribers."""
+    stage = job.status if job.status in PIPELINE_STAGES else "parsing"
+    status = "progress"
+    if job.status == "pending":
+        status = "started"
+    elif job.status == "error":
+        status = "error"
+    elif job.status == "cancelled":
+        status = "error"
+        stage = "cancelled"
+    elif job.status == "complete":
+        status = "complete"
+        stage = "export"
+    elif job.status == "awaiting_confirmation":
+        status = "complete"
+        stage = "research"
+
+    return {
+        "type": "progress",
+        "job_id": job_id,
+        "stage": stage,
+        "status": status,
+        "message": job.message,
+        "progress": job.progress,
+        "slides_completed": job.slides_completed,
+        "total_slides": job.total_slides,
+        "data": {
+            "output_path": job.output_path,
+            "project_dir": job.project_dir,
+        },
+    }
+
+
+def payloads_from_progress_event(job_id: str, job: Job, event: Any) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    """Turn a pipeline event into one or more socket payloads plus job updates."""
+    payloads: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    updates: dict[str, Any] = {
+        "message": event.message,
+        "progress": event.progress,
+    }
+
+    if event.data and event.data.get("project_dir"):
+        updates["project_dir"] = event.data["project_dir"]
+
+    if event.stage == "generation" and event.data and event.data.get("total_slides"):
+        updates["total_slides"] = int(event.data["total_slides"])
+
+    if event.stage == "generation" and event.status == "progress":
+        page = int(event.data.get("page", 0)) if event.data else 0
+        updates["slides_completed"] = max(job.slides_completed, page)
+
+    if event.stage == "export" and event.status == "complete":
+        updates["output_path"] = event.data.get("output_path") if event.data else None
+        updates["status"] = "complete"
+        updates["error"] = None
+    elif event.status == "error":
+        updates["status"] = "error"
+        updates["error"] = event.message
+    else:
+        updates["status"] = event.stage
+
+    progress_payload = {
+        "type": "progress",
+        "job_id": job_id,
+        "stage": event.stage if event.stage in PIPELINE_STAGES else "export",
+        "status": event.status,
+        "message": event.message,
+        "progress": event.progress,
+        "slides_completed": updates.get("slides_completed", job.slides_completed),
+        "total_slides": updates.get("total_slides", job.total_slides),
+        "data": event.data or {},
+    }
+    payloads.append((progress_payload, updates))
+
+    if event.stage == "export" and event.status == "complete":
+        complete_payload = {
+            "type": "complete",
+            "job_id": job_id,
+            "stage": "export",
+            "status": "complete",
+            "message": event.message,
+            "progress": 1.0,
+            "slides_completed": updates.get("slides_completed", job.slides_completed),
+            "total_slides": updates.get("total_slides", job.total_slides),
+            "data": {"output_path": updates.get("output_path")},
+        }
+        payloads.append((complete_payload, {}))
+
+    if event.status == "error":
+        error_payload = {
+            "type": "error",
+            "job_id": job_id,
+            "stage": "export",
+            "status": "error",
+            "message": event.message,
+            "progress": job.progress,
+            "data": {"error": event.message},
+        }
+        payloads.append((error_payload, {}))
+
+    return payloads

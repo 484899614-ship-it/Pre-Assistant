@@ -1,0 +1,89 @@
+"""Global configuration using Pydantic Settings."""
+
+from pathlib import Path
+from typing import Literal
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+# Canvas format definitions
+CANVAS_FORMATS = {
+    "ppt169": {
+        "name": "PPT 16:9",
+        "width": 1280,
+        "height": 720,
+        "viewbox": "0 0 1280 720",
+        "ratio": "16:9",
+    },
+    "ppt43": {
+        "name": "PPT 4:3",
+        "width": 1024,
+        "height": 768,
+        "viewbox": "0 0 1024 768",
+        "ratio": "4:3",
+    },
+}
+
+# Design color schemes
+DESIGN_STYLES = {
+    "academic": {
+        "name": "Academic",
+        "background": "#FFFFFF",
+        "primary": "#1A365D",
+        "accent": "#2B6CB0",
+        "body_text": "#2D3748",
+    },
+    "consulting": {
+        "name": "Consulting",
+        "background": "#FFFFFF",
+        "primary": "#003A70",
+        "accent": "#0077B6",
+        "body_text": "#1A202C",
+    },
+    "tech": {
+        "name": "Tech",
+        "background": "#0F172A",
+        "primary": "#3B82F6",
+        "accent": "#06B6D4",
+        "body_text": "#E2E8F0",
+    },
+    "nature": {
+        "name": "Nature",
+        "background": "#FFFFFF",
+        "primary": "#2D6A4F",
+        "accent": "#40916C",
+        "body_text": "#1B4332",
+    },
+}
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+
+    # Server
+    host: str = "0.0.0.0"
+    port: int = 8001
+
+    # LLM defaults
+    default_llm_provider: Literal["openai", "deepseek", "doubao", "anthropic"] = "doubao"
+    default_llm_model: str = "doubao-seed-2-0-lite-260215"
+    openai_api_key: str | None = None
+    deepseek_api_key: str | None = None
+    doubao_api_key: str | None = None
+    doubao_base_url: str | None = None
+    anthropic_api_key: str | None = None
+
+    # Paths
+    sessions_dir: Path = PROJECT_ROOT / "sessions"
+    workspaces_dir: Path = PROJECT_ROOT / "workspaces"
+    runtime_dir: Path = PROJECT_ROOT / ".runtime"
+    templates_dir: Path = PROJECT_ROOT / "templates"
+    icons_dir: Path = PROJECT_ROOT / "assets" / "icons"
+
+    # Limits
+    max_concurrent_jobs: int = 3
+    max_upload_bytes: int = 64 * 1024 * 1024  # 64 MB
+
+
+settings = Settings()

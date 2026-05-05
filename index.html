@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <title>论文 → 组会PPT</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: "Microsoft YaHei", Arial, sans-serif; background: #f0f2f5; color: #333; }
+        .container { max-width: 1000px; margin: 0 auto; padding: 30px; }
+
+        h1 { text-align: center; margin-bottom: 30px; font-size: 24px; }
+        h2 { font-size: 18px; margin-bottom: 15px; color: #555; }
+
+        .steps { display: flex; justify-content: center; gap: 0; margin-bottom: 30px; }
+        .step { padding: 10px 25px; background: #e0e0e0; color: #888; font-size: 14px; }
+        .step.active { background: #007bff; color: white; }
+        .step.done { background: #28a745; color: white; }
+        .step:first-child { border-radius: 6px 0 0 6px; }
+        .step:last-child { border-radius: 0 6px 6px 0; }
+
+        .upload-area {
+            background: white; border: 2px dashed #ccc; border-radius: 10px;
+            padding: 40px; text-align: center; margin-bottom: 20px;
+        }
+        .upload-area.dragover { border-color: #007bff; background: #f0f7ff; }
+        .upload-area input { display: none; }
+        .upload-area span { cursor: pointer; color: #007bff; font-size: 16px; } }
+        .upload-area .filename { margin-top: 10px; color: #666; font-size: 14px; }
+
+        .btn {
+            padding: 10px 24px; border: none; border-radius: 6px;
+            cursor: pointer; font-size: 14px; transition: opacity 0.2s;
+            text-decoration: none; display: inline-block;
+        }
+        .btn-primary { background: #007bff; color: white; }
+        .btn-success { background: #28a745; color: white; }
+        .btn-outline { background: white; color: #007bff; border: 1px solid #007bff; }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn:hover:not(:disabled) { opacity: 0.85; }
+        .actions { text-align: center; margin: 20px 0; }
+
+        .panel { display: none; }
+        .panel.visible { display: block; }
+
+        .matrix { background: white; border-radius: 8px; padding: 20px; margin-bottom: 20px; }
+        .matrix-item { margin-bottom: 12px; }
+        .matrix-item label { font-weight: bold; color: #007bff; font-size: 14px; }
+        .matrix-item p { margin-top: 4px; font-size: 14px; line-height: 1.6; }
+
+        /* 提取结果概览 */
+        .extract-summary {
+            background: white; border-radius: 8px; padding: 15px 20px;
+            margin-bottom: 20px; font-size: 14px; color: #666;
+        }
+        .extract-summary span { margin-right: 20px; }
+        .extract-summary .num { font-weight: bold; color: #007bff; }
+
+        /* 图表/公式预览网格 */
+        .assets-grid {
+            display: flex; flex-wrap: wrap; gap: 12px;
+            margin-bottom: 20px;
+        }
+        .asset-thumb {
+            background: white; border-radius: 8px; padding: 8px;
+            border: 1px solid #ddd; text-align: center; width: 160px;
+        }
+        .asset-thumb img {
+            max-width: 140px; max-height: 100px; object-fit: contain;
+            border-radius: 4px;
+        }
+        .asset-thumb .asset-label {
+            font-size: 12px; color: #555; margin-top: 6px;
+        }
+        .asset-thumb .asset-tag {
+            display: inline-block; font-size: 10px; padding: 1px 6px;
+            border-radius: 8px; color: white; margin-right: 4px;
+        }
+        .asset-tag.figure { background: #28a745; }
+        .asset-tag.equation { background: #fd7e14; }
+
+        /* 提纲编辑 */
+        .slide-card {
+            background: white; border-radius: 8px; padding: 15px 20px;
+            margin-bottom: 10px; border-left: 4px solid #007bff;
+        }
+        .slide-card .slide-title { font-weight: bold; font-size: 15px; margin-bottom: 8px; }
+        .slide-card textarea {
+            width: 100%; min-height: 60px; border: 1px solid #ddd;
+            border-radius: 4px; padding: 8px; font-size: 13px; resize: vertical;
+        }
+        .slide-card .notes { font-size: 12px; color: #888; margin-top: 6px; font-style: italic; }
+        .slide-card .va-badge {
+            display: inline-block; font-size: 11px; padding: 2px 8px;
+            border-radius: 8px; color: white; margin-top: 4px; margin-right: 4px;
+        }
+        .va-badge.figure { background: #28a745; }
+        .va-badge.equation { background: #fd7e14; }
+
+        .advisor-questions {
+            background: #fff8e1; border-radius: 8px; padding: 15px;
+            margin-bottom: 20px; font-size: 14px;
+        }
+        .advisor-questions li { margin: 6px 0; }
+
+        /* 讲稿区 */
+        .script-section {
+            background: white; border-radius: 10px; padding: 25px; margin-top: 25px;
+        }
+        .script-section h2 { margin-bottom: 15px; }
+        .script-line {
+            padding: 12px 15px; margin: 8px 0; background: #fafafa;
+            border: 1px solid #eee; border-radius: 6px; cursor: pointer;
+            transition: background 0.15s, border-color 0.15s;
+            line-height: 1.7; font-size: 14px;
+        }
+        .script-line:hover { background: #eef6ff; border-color: #b3d4fc; }
+        .script-line .page-tag {
+            display: inline-block; background: #007bff; color: white;
+            font-size: 11px; padding: 2px 8px; border-radius: 10px;
+            margin-right: 8px; vertical-align: middle;
+        }
+        .script-line .title-tag { font-weight: bold; color: #333; margin-right: 6px; }
+        .script-line .notes-text { color: #555; }
+        .script-line .va-inline {
+            font-size: 11px; padding: 1px 6px; border-radius: 6px;
+            color: white; margin-left: 6px; vertical-align: middle;
+        }
+        .va-inline.figure { background: #28a745; }
+        .va-inline.equation { background: #fd7e14; }
+        .copy-all-btn {
+            float: right; font-size: 13px; padding: 6px 16px;
+            background: #f0f0f0; border: 1px solid #ddd; border-radius: 4px;
+            cursor: pointer; color: #555;
+        }
+        .copy-all-btn:hover { background: #e0e0e0; }
+
+        .tooltip {
+            position: fixed; background: #1a1a2e; color: #eee;
+            padding: 14px 18px; border-radius: 8px; max-width: 520px;
+            display: none; z-index: 9999; font-size: 13px; line-height: 1.6;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+        }
+        .tooltip .orig-label { color: #64b5f6; font-weight: bold; margin-bottom: 6px; }
+        .tooltip .orig-text { color: #e0e0e0; }
+
+        .success-msg { text-align: center; padding: 30px 0; }
+        .success-msg h2 { color: #28a745; margin-bottom: 15px; }
+
+        .loading { text-align: center; padding: 30px; color: #888; }
+        .loading::after {
+            content: ''; display: inline-block; width: 20px; height: 20px;
+            border: 2px solid #ccc; border-top-color: #007bff;
+            border-radius: 50%; animation: spin 0.6s linear infinite;
+            margin-left: 8px; vertical-align: middle;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .error-msg { background: #fee; color: #c00; padding: 12px; border-radius: 6px; margin: 10px 0; display: none; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>论文 → 组会PPT</h1>
+
+        <div class="steps">
+            <div class="step active" id="step1">1. 上传论文</div>
+            <div class="step" id="step2">2. 确认提纲</div>
+            <div class="step" id="step3">3. 生成PPT</div>
+        </div>
+
+        <div class="error-msg" id="errorMsg"></div>
+
+        <!-- 第一步 -->
+        <div class="panel visible" id="panel1">
+            <div class="upload-area" id="uploadArea">
+                <input type="file" id="pdfFile" accept="application/pdf">
+                <span id="uploadLabel">点击选择 PDF 论文文件</span>
+                <div class="filename" id="fileName"></div>
+            </div>
+            <div class="actions">
+                <button class="btn btn-primary" id="btnExtract" disabled onclick="doExtract()">提取论文内容</button>
+            </div>
+        </div>
+
+        <!-- 第二步 -->
+        <div class="panel" id="panel2">
+            <div class="loading" id="outlineLoading">AI 正在分析论文并生成提纲</div>
+            <div id="outlineContent" style="display:none">
+                <!-- 提取概览 -->
+                <div class="extract-summary" id="extractSummary"></div>
+
+                <!-- 图表/公式预览 -->
+                <h2>提取的图表与公式</h2>
+                <div class="assets-grid" id="assetsGrid"></div>
+
+                <h2>文献阅读矩阵</h2>
+                <div class="matrix" id="readingMatrix"></div>
+
+                <div class="advisor-questions" id="advisorQuestions" style="display:none">
+                    <strong>导师可能提问：</strong>
+                    <ul id="questionsList"></ul>
+                </div>
+
+                <h2>PPT 提纲方案（可编辑）</h2>
+                <div id="slidesEditor"></div>
+
+                <div class="actions" style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+                    <label style="font-size:13px; color:#666;">生成模式：
+                        <select id="genMode" onchange="onModeChange()" style="padding:4px 8px; border-radius:6px; border:1px solid #ccc;">
+                            <option value="quick">快速模式</option>
+                            <option value="fancy">精美模式（AI设计）</option>
+                        </select>
+                    </label>
+                    <label id="styleLabel" style="font-size:13px; color:#666; display:none;">配色风格：
+                        <select id="genStyle" style="padding:4px 8px; border-radius:6px; border:1px solid #ccc;">
+                            <option value="academic">学术蓝</option>
+                            <option value="consulting">咨询深蓝</option>
+                            <option value="tech">科技暗黑</option>
+                            <option value="nature">自然绿</option>
+                        </select>
+                    </label>
+                    <button class="btn btn-primary" onclick="doGenerate()">确认提纲，生成 PPT</button>
+                    <button class="btn" onclick="regenerateOutline()">重新生成</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 第三步 -->
+        <div class="panel" id="panel3">
+            <div class="loading" id="generateLoading">正在生成 PPT...</div>
+            <div id="resultContent" style="display:none">
+                <div class="success-msg">
+                    <h2>PPT 生成成功！</h2>
+                    <p id="slidesCount"></p>
+                    <div class="actions" style="margin-top:20px">
+                        <a class="btn btn-success" id="downloadLink" href="#" download>下载 PPT</a>
+                        <button class="btn btn-outline" onclick="resetAll()" style="margin-left:10px">重新开始</button>
+                    </div>
+                </div>
+                <div class="script-section" id="scriptSection">
+                    <button class="copy-all-btn" onclick="copyAllScript()">复制全部讲稿</button>
+                    <h2>逐页讲稿（悬停查看原文依据）</h2>
+                    <div id="scriptList"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="tooltip" id="tooltip">
+        <div class="orig-label">原文依据：</div>
+        <div class="orig-text" id="tooltipText"></div>
+    </div>
+
+    <script>
+        let sessionId = null;
+        let currentSlides = [];
+        let scriptLines = [];
+        let extractedAssets = []; // 图表/公式列表
+
+        const uploadArea = document.getElementById('uploadArea');
+        const pdfInput = document.getElementById('pdfFile');
+        const btnExtract = document.getElementById('btnExtract');
+        const tooltip = document.getElementById('tooltip');
+        const tooltipText = document.getElementById('tooltipText');
+
+        uploadArea.addEventListener('click', () => pdfInput.click());
+        uploadArea.addEventListener('dragover', e => { e.preventDefault(); uploadArea.classList.add('dragover'); });
+        uploadArea.addEventListener('dragleave', () => uploadArea.classList.remove('dragover'));
+        uploadArea.addEventListener('drop', e => {
+            e.preventDefault(); uploadArea.classList.remove('dragover');
+            if (e.dataTransfer.files.length) { pdfInput.files = e.dataTransfer.files; onFileSelected(); }
+        });
+        pdfInput.addEventListener('change', onFileSelected);
+
+        function onFileSelected() {
+            const file = pdfInput.files[0];
+            if (file) { document.getElementById('fileName').textContent = file.name; btnExtract.disabled = false; }
+        }
+
+        function showStep(n) {
+            document.querySelectorAll('.panel').forEach(p => p.classList.remove('visible'));
+            document.getElementById('panel' + n).classList.add('visible');
+            document.querySelectorAll('.step').forEach((s, i) => {
+                s.classList.remove('active', 'done');
+                if (i + 1 < n) s.classList.add('done');
+                else if (i + 1 === n) s.classList.add('active');
+            });
+        }
+
+        function showError(msg) {
+            const el = document.getElementById('errorMsg');
+            el.textContent = msg; el.style.display = 'block';
+            setTimeout(() => el.style.display = 'none', 5000);
+        }
+
+        // ===== 第一步：提取 =====
+        async function doExtract() {
+            btnExtract.disabled = true;
+            const fd = new FormData();
+            fd.append('pdf', pdfInput.files[0]);
+
+            try {
+                const res = await fetch('/extract', { method: 'POST', body: fd });
+                let data;
+                try { data = await res.json(); } catch { throw new Error('服务器返回了非JSON响应，请检查后端是否正常运行'); }
+                if (!res.ok) throw new Error(data.error || '提取失败');
+
+                sessionId = data.session_id;
+                extractedAssets = data.visual_assets || [];
+
+                console.log(`提取完成: ${data.total_pages}页, ${data.figures_count}张图, ${data.equations_count}个公式`);
+                showStep(2);
+                doOutline();
+            } catch (e) {
+                showError('PDF 提取失败: ' + e.message);
+                btnExtract.disabled = false;
+            }
+        }
+
+        // ===== 第二步 =====
+        async function doOutline() {
+            document.getElementById('outlineLoading').style.display = 'block';
+            document.getElementById('outlineContent').style.display = 'none';
+
+            try {
+                const res = await fetch('/outline', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: sessionId })
+                });
+                let data;
+                try { data = await res.json(); } catch { throw new Error('服务器返回了非JSON响应，请检查后端日志'); }
+                if (!res.ok) throw new Error(data.error || '提纲生成失败');
+                renderOutline(data);
+            } catch (e) {
+                showError('提纲生成失败: ' + e.message);
+            }
+        }
+
+        function regenerateOutline() { doOutline(); }
+
+        function renderOutline(data) {
+            document.getElementById('outlineLoading').style.display = 'none';
+            document.getElementById('outlineContent').style.display = 'block';
+
+            // 提取概览
+            const summaryEl = document.getElementById('extractSummary');
+            const figCount = extractedAssets.filter(a => a.type === 'figure').length;
+            const eqCount = extractedAssets.filter(a => a.type === 'equation').length;
+            summaryEl.innerHTML = `
+                <span>总页数: <span class="num">${data.reading_matrix ? '?' : '?'}</span></span>
+                <span>图表: <span class="num">${figCount}</span> 张</span>
+                <span>公式: <span class="num">${eqCount}</span> 个</span>
+            `;
+
+            // 图表/公式预览
+            const assetsGrid = document.getElementById('assetsGrid');
+            if (extractedAssets.length === 0) {
+                assetsGrid.innerHTML = '<p style="color:#999;font-size:14px">未检测到图表或公式</p>';
+            } else {
+                assetsGrid.innerHTML = extractedAssets.map(a => {
+                    const label = a.type === 'figure' ? `图${a.index}` : `公式${a.index}`;
+                    const tagClass = a.type === 'figure' ? 'figure' : 'equation';
+                    const tagText = a.type === 'figure' ? '图表' : '公式';
+                    return `
+                        <div class="asset-thumb">
+                            <img src="${a.url}" alt="${label}" loading="lazy">
+                            <div class="asset-label">
+                                <span class="asset-tag ${tagClass}">${tagText}</span>
+                                ${label}（第${a.page}页）
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+            }
+
+            // 阅读矩阵
+            const matrix = data.reading_matrix || {};
+            const matrixEl = document.getElementById('readingMatrix');
+            const fields = [
+                ['core_problem', '核心问题'], ['research_gap', '研究空白'],
+                ['method', '方法概述'], ['key_evidence', '核心证据'],
+                ['limitations', '局限性']
+            ];
+            matrixEl.innerHTML = fields.map(([key, label]) =>
+                `<div class="matrix-item"><label>${label}</label><p>${matrix[key] || '—'}</p></div>`
+            ).join('');
+
+            // 导师提问
+            const questions = matrix.advisor_questions || [];
+            if (questions.length) {
+                document.getElementById('advisorQuestions').style.display = 'block';
+                document.getElementById('questionsList').innerHTML = questions.map(q => `<li>${q}</li>`).join('');
+            }
+
+            // 提纲编辑
+            currentSlides = data.slides || [];
+            const editorEl = document.getElementById('slidesEditor');
+            editorEl.innerHTML = currentSlides.map((s, i) => {
+                // visual_assets 标签
+                let vaHtml = '';
+                const va = s.visual_assets || [];
+                for (const v of va) {
+                    const cls = v.type === 'figure' ? 'figure' : 'equation';
+                    const txt = v.type === 'figure' ? `图${v.index}` : `公式${v.index}`;
+                    vaHtml += `<span class="va-badge ${cls}">${txt}</span> `;
+                }
+                return `
+                    <div class="slide-card">
+                        <div class="slide-title">第 ${i + 1} 页：${s.title || '无标题'}</div>
+                        <textarea data-idx="${i}" class="slide-content">${s.content || ''}</textarea>
+                        ${vaHtml ? `<div style="margin-top:6px">${vaHtml}</div>` : ''}
+                        <div class="notes">讲稿: ${s.speaker_notes || '无'}</div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        // ===== 第三步 =====
+        async function doGenerate() {
+            showStep(3);
+            document.getElementById('generateLoading').style.display = 'block';
+            document.getElementById('resultContent').style.display = 'none';
+
+            const editedSlides = currentSlides.map((s, i) => {
+                const textarea = document.querySelector(`textarea[data-idx="${i}"]`);
+                return { ...s, content: textarea ? textarea.value : s.content };
+            });
+
+            const mode = document.getElementById('genMode').value;
+            const style = document.getElementById('genStyle').value;
+
+            try {
+                const res = await fetch('/generate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: sessionId, slides: editedSlides, mode: mode, style: style })
+                });
+                let data;
+                try { data = await res.json(); } catch { throw new Error('服务器返回了非JSON响应，请检查后端日志'); }
+                if (!res.ok) throw new Error(data.error || '生成失败');
+                renderResult(data);
+            } catch (e) {
+                showError('PPT 生成失败: ' + e.message);
+            }
+        }
+
+        function onModeChange() {
+            const mode = document.getElementById('genMode').value;
+            document.getElementById('styleLabel').style.display = mode === 'fancy' ? 'inline' : 'none';
+        }
+
+        function renderResult(data) {
+            document.getElementById('generateLoading').style.display = 'none';
+            document.getElementById('resultContent').style.display = 'block';
+            document.getElementById('slidesCount').textContent = `共 ${data.slides_count} 页`;
+            document.getElementById('downloadLink').href = `/download/${sessionId}`;
+
+            scriptLines = data.script_lines || [];
+            const listEl = document.getElementById('scriptList');
+            listEl.innerHTML = scriptLines.map(item => {
+                const orig = (item.orig || '').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+                let vaHtml = '';
+                if (item.visual_assets_desc) {
+                    // 简单解析 "图1"、"公式2" 等
+                    const parts = item.visual_assets_desc.split('、');
+                    for (const p of parts) {
+                        const isEq = p.startsWith('公式');
+                        vaHtml += `<span class="va-inline ${isEq ? 'equation' : 'figure'}">${p}</span>`;
+                    }
+                }
+                return `
+                    <div class="script-line" data-orig="${orig}">
+                        <span class="page-tag">P${item.page}</span>
+                        <span class="title-tag">${item.title}</span>
+                        ${vaHtml}
+                        <br><span class="notes-text">${item.notes || '无讲稿'}</span>
+                    </div>
+                `;
+            }).join('');
+
+            listEl.querySelectorAll('.script-line').forEach(el => {
+                el.addEventListener('mouseenter', e => {
+                    const orig = el.getAttribute('data-orig');
+                    tooltipText.textContent = orig || '无原文依据';
+                    tooltip.style.display = 'block';
+                    positionTooltip(e);
+                });
+                el.addEventListener('mousemove', positionTooltip);
+                el.addEventListener('mouseleave', () => { tooltip.style.display = 'none'; });
+            });
+        }
+
+        function positionTooltip(e) {
+            const pad = 15;
+            let x = e.clientX + pad, y = e.clientY + pad;
+            if (x + 520 > window.innerWidth) x = e.clientX - 530;
+            if (y + 200 > window.innerHeight) y = e.clientY - 210;
+            tooltip.style.left = x + 'px';
+            tooltip.style.top = y + 'px';
+        }
+
+        function copyAllScript() {
+            const text = scriptLines.map(item =>
+                `【第${item.page}页 - ${item.title}】${item.visual_assets_desc ? ' [' + item.visual_assets_desc + ']' : ''}\n${item.notes || '无讲稿'}`
+            ).join('\n\n');
+            navigator.clipboard.writeText(text).then(() => {
+                const btn = document.querySelector('.copy-all-btn');
+                const orig = btn.textContent;
+                btn.textContent = '已复制!';
+                setTimeout(() => btn.textContent = orig, 1500);
+            }).catch(() => {
+                const ta = document.createElement('textarea');
+                ta.value = text; document.body.appendChild(ta);
+                ta.select(); document.execCommand('copy');
+                document.body.removeChild(ta);
+            });
+        }
+
+        function resetAll() {
+            sessionId = null; currentSlides = []; scriptLines = []; extractedAssets = [];
+            pdfInput.value = '';
+            document.getElementById('fileName').textContent = '';
+            btnExtract.disabled = true;
+            document.getElementById('advisorQuestions').style.display = 'none';
+            showStep(1);
+        }
+    </script>
+</body>
+</html>

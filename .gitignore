@@ -1,0 +1,35 @@
+# Runtime data
+sessions/
+workspaces/
+.runtime/
+
+# Logs
+app_log.txt
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.env
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Generated outputs (keep source code only)
+output*.pptx
+input.pdf
+part1.pdf
+test.pdf
+test2.pdf
+input_汇报.pptx
+template.pptx
+code.txt
+index.txt
+
+# SVG/PPTX conversion module is part of source, keep it

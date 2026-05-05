@@ -1,0 +1,18 @@
+flask
+PyMuPDF
+Pillow
+python-pptx
+requests
+# FastAPI stack
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+python-multipart
+# LLM provider SDK
+openai
+# 可选：安装后启用高精度公式检测
+# paddlepaddle
+# paddleocr
+# 可选：安装后启用精美模式（AI设计SVG幻灯片）
+resvg-py
