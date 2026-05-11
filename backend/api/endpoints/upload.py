@@ -15,6 +15,7 @@ router = APIRouter()
 
 SUPPORTED_EXTENSIONS = {
     ".pdf": "pdf",
+    ".docx": "docx",
 }
 
 
@@ -25,7 +26,7 @@ async def upload_paper(file: UploadFile = File(...)) -> UploadResponse:
     if source_type is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Unsupported file type. Please upload a PDF paper.",
+            detail="Unsupported file type. Please upload a PDF or Word (.docx) document.",
         )
 
     content = await file.read()
@@ -45,7 +46,7 @@ async def upload_paper(file: UploadFile = File(...)) -> UploadResponse:
     session_dir = settings.sessions_dir / session_id
     session_dir.mkdir(parents=True, exist_ok=True)
 
-    file_path = session_dir / (file.filename or "input.pdf")
+    file_path = session_dir / (file.filename or f"input{suffix}")
     file_path.write_bytes(content)
 
     session = session_manager.create_session(

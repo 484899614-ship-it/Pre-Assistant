@@ -2,6 +2,7 @@ flask
 PyMuPDF
 Pillow
 python-pptx
+python-docx
 requests
 # FastAPI stack
 fastapi

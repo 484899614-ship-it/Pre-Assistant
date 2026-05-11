@@ -13,7 +13,7 @@ export function UploadZone({ onFile, loading, uploaded }: UploadZoneProps) {
     e.preventDefault()
     setDragOver(false)
     const file = e.dataTransfer.files[0]
-    if (file?.type === 'application/pdf') {
+    if (file && (file.type === 'application/pdf' || file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')) {
       onFile(file)
     }
   }, [onFile])
@@ -34,7 +34,7 @@ export function UploadZone({ onFile, loading, uploaded }: UploadZoneProps) {
     >
       <input
         type="file"
-        accept=".pdf"
+        accept=".pdf,.docx"
         onChange={(e) => {
           const f = e.target.files?.[0]
           if (f) onFile(f)
@@ -42,7 +42,7 @@ export function UploadZone({ onFile, loading, uploaded }: UploadZoneProps) {
         style={{ marginBottom: '1rem' }}
       />
       <p style={{ color: '#888', fontSize: '0.9rem' }}>
-        {uploaded ? 'File uploaded and extracted' : 'Drag & drop a PDF file here, or click to select'}
+        {uploaded ? 'File uploaded and extracted' : 'Drag & drop a PDF or Word (.docx) file here, or click to select'}
       </p>
       {loading && <p style={{ color: '#1A365D' }}>Processing...</p>}
     </div>

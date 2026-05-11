@@ -81,10 +81,17 @@ async def run_pipeline(request: GenerationRequest) -> AsyncIterator[ProgressEven
     from backend.orchestrator.strategist_agent import create_design_spec
     from backend.orchestrator.svg_executor import generate_svg_pages
     from backend.parser.pdf_parser import PDFParser
+    from backend.parser.word_parser import WordParser
+
+    suffix = request.file_path.suffix.lower()
 
     # Stage 1: Parse
-    yield ProgressEvent("parsing", "started", "Parsing PDF...", 0.05)
-    parser = PDFParser()
+    if suffix == ".docx":
+        yield ProgressEvent("parsing", "started", "Parsing Word document...", 0.05)
+        parser = WordParser()
+    else:
+        yield ProgressEvent("parsing", "started", "Parsing PDF...", 0.05)
+        parser = PDFParser()
     project_dir = settings.workspaces_dir / f"job_{id(request)}"
     from backend.generator.project_manager import init_project
     init_project(project_dir)
@@ -145,13 +152,15 @@ async def continue_pipeline(
     """Resume pipeline after user confirms/edits the outline."""
     from backend.llm import create_provider
     from backend.parser.pdf_parser import PDFParser
+    from backend.parser.word_parser import WordParser
 
     llm = create_provider(request.provider, request.api_key, base_url=request.base_url)
     project_dir = settings.workspaces_dir / f"job_{job_id}"
 
     # Re-parse paper for figure inventory
     try:
-        parser = PDFParser()
+        suffix = request.file_path.suffix.lower()
+        parser = WordParser() if suffix == ".docx" else PDFParser()
         paper = await parser.parse(request.file_path, project_dir)
     except Exception:
         paper = None

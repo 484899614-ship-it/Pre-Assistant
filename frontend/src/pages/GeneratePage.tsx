@@ -250,13 +250,13 @@ export default function GeneratePage() {
             onDrop={(e) => {
               e.preventDefault()
               const f = e.dataTransfer.files[0]
-              if (f?.type === 'application/pdf') setFile(f)
+              if (f && (f.type === 'application/pdf' || f.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')) setFile(f)
             }}
           >
             <input
               id="file-input"
               type="file"
-              accept=".pdf"
+              accept=".pdf,.docx"
               onChange={(e) => {
                 const f = e.target.files?.[0]
                 if (f) { setFile(f); setUploaded(false) }
@@ -264,7 +264,7 @@ export default function GeneratePage() {
             />
             <div className="upload-icon"><UploadCloud size={40} /></div>
             <div className="upload-hint">
-              {file ? file.name : '拖放 PDF 论文到此处，或点击选择'}
+              {file ? file.name : '拖放 PDF 或 Word 文档到此处，或点击选择'}
             </div>
             {uploaded && <div className="upload-done">已上传并解析</div>}
             {file && !uploaded && (
