@@ -789,6 +789,40 @@ async def generate_speaker_notes(
         except json.JSONDecodeError:
             pass
 
+    # Auto-correct numbers in notes to match paper
+    # LLM may round/reformat numbers (e.g. 0.292 -> 0.30). We find each
+    # number in the notes and replace it with the closest-matching number from
+    # the paper text so that exact substring matching works.
+    if paper_text and notes:
+        paper_numbers = [
+            (m.group(), float(m.group().replace(',', '')))
+            for m in re.finditer(r'\d[\d,]*\.?\d*', paper_text)
+        ]
+        if paper_numbers:
+            def _correct_numbers(text):
+                def _replace_one(m):
+                    raw = m.group()
+                    try:
+                        val = float(raw.replace(',', ''))
+                    except ValueError:
+                        return raw
+                    if val < 0.001 or (val == int(val) and val > 100):
+                        return raw
+                    best_raw = None
+                    best_diff = float('inf')
+                    for p_raw, p_val in paper_numbers:
+                        diff = abs(val - p_val)
+                        if diff < best_diff and diff < 0.05 and (p_val == 0 or diff / abs(p_val) < 0.05):
+                            best_diff = diff
+                            best_raw = p_raw
+                    if best_raw is not None and best_raw != raw:
+                        return best_raw
+                    return raw
+                return re.sub(r'\d[\d,]*\.?\d*', _replace_one, text)
+
+            for key in list(notes.keys()):
+                notes[key] = _correct_numbers(notes[key])
+
     # Fallback: if JSON parsing failed, create simple notes from outline
     if not notes:
         for i, page_content in enumerate(pages):
@@ -808,6 +842,13 @@ async def generate_speaker_notes(
     if paper_text:
         # Pre-process: rejoin hyphenated line breaks (e.g. "percent-\nage" → "percentage")
         clean_text = re.sub(r'(\w)-\s*\n\s*(\w)', r'\1\2', paper_text)
+        # Remove figure/table/equation markers -- only match body text for source citations
+        clean_text = re.sub(r'\[\[FIG:[^\]]*\]\][^\n]*', '', clean_text)
+        clean_text = re.sub(r'\[\[EQ:[^\]]*\]\]\([^)]*\)', '', clean_text)
+        clean_text = re.sub(r'\[\[EQ:[^\]]*\]\]', '', clean_text)
+        clean_text = re.sub(r'^\|.*\|$', '', clean_text, count=0, flags=re.MULTILINE)
+        clean_text = re.sub(r'^\|[-:| ]+$', '', clean_text, count=0, flags=re.MULTILINE)
+        clean_text = re.sub(r'^>\s*Context:.*$', '', clean_text, count=0, flags=re.MULTILINE)
         # Replace remaining newlines with spaces (newlines are just formatting, not sentence boundaries)
         clean_text = re.sub(r'\n+', ' ', clean_text)
         # Split into sentences by sentence-ending punctuation, avoiding decimal points

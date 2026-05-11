@@ -396,31 +396,26 @@ function PresenterView({
   const goNext = useCallback(() => setCurrent(c => Math.min(c + 1, total - 1)), [total])
   const goPrev = useCallback(() => setCurrent(c => Math.max(c - 1, 0)), [])
 
-  // Auto-advance: when user scrolls to fully reveal next page's notes, switch slide
+  // Auto-advance: when user scrolls near the bottom of notes, switch slide
   useEffect(() => {
     const container = notesScrollRef.current
-    const target = nextNotesRef.current
-    if (!container || !target) return
+    if (!container) return
 
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        // Only trigger when fully visible and not already advancing
-        if (entry.intersectionRatio >= 0.95 && !autoAdvanceLock.current) {
-          autoAdvanceLock.current = true
-          goNext()
-          // Reset scroll to top after advancing
-          requestAnimationFrame(() => {
-            container.scrollTo({ top: 0, behavior: 'smooth' })
-            // Release lock after a short delay to prevent re-trigger
-            setTimeout(() => { autoAdvanceLock.current = false }, 500)
-          })
-        }
-      },
-      { root: container, threshold: 0.95 }
-    )
-    observer.observe(target)
-    return () => observer.disconnect()
-  }, [current, goNext, nextNotes])
+    const onScroll = () => {
+      if (autoAdvanceLock.current) return
+      const { scrollTop, scrollHeight, clientHeight } = container
+      if (scrollHeight - scrollTop - clientHeight < 50) {
+        autoAdvanceLock.current = true
+        goNext()
+        requestAnimationFrame(() => {
+          container.scrollTo({ top: 0, behavior: 'smooth' })
+          setTimeout(() => { autoAdvanceLock.current = false }, 500)
+        })
+      }
+    }
+    container.addEventListener('scroll', onScroll)
+    return () => container.removeEventListener('scroll', onScroll)
+  }, [current, goNext])
 
   // Timer
   useEffect(() => {
